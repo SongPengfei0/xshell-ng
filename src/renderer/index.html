@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <title>XShell NG</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">NG</div>
+          <div class="brand-copy">
+            <strong>XShell NG</strong>
+            <span>SSH Client</span>
+          </div>
+        </div>
+        <nav id="fullscreen-menu" class="fullscreen-menu" aria-label="全屏菜单">
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">文件</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="new-session">新建连接配置</button>
+              <button type="button" data-command="quick-connect">快速连接</button>
+              <span class="menu-divider"></span>
+              <button type="button" data-command="import-profiles">导入连接配置</button>
+              <button type="button" data-command="export-profiles">导出连接配置</button>
+              <span class="menu-divider"></span>
+              <button type="button" data-command="close-tab">关闭标签</button>
+              <button type="button" data-command="reconnect-tab">重新连接</button>
+              <span class="menu-divider"></span>
+              <button type="button" data-command="exit-full-screen">退出全屏</button>
+            </div>
+          </div>
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">编辑</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="copy">复制</button>
+              <button type="button" data-command="paste">粘贴</button>
+              <button type="button" data-command="select-all">全选</button>
+              <span class="menu-divider"></span>
+              <button type="button" data-command="open-search">查找</button>
+              <button type="button" data-command="search-next">查找下一个</button>
+              <button type="button" data-command="search-previous">查找上一个</button>
+            </div>
+          </div>
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">查看</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="toggle-full-screen">切换全屏</button>
+              <button type="button" data-command="toggle-sidebar">切换侧栏</button>
+            </div>
+          </div>
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">工具</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="open-sftp">SFTP 文件传输</button>
+              <button type="button" data-command="open-tunnels">SSH 隧道</button>
+              <button type="button" data-command="open-preferences">选项</button>
+            </div>
+          </div>
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">帮助</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="about">关于 XShell NG</button>
+            </div>
+          </div>
+        </nav>
+        <button id="exit-fullscreen" class="fullscreen-exit hidden" type="button" title="退出全屏 (Esc / F11)">
+          <i data-lucide="minimize-2"></i>
+          <span>退出全屏</span>
+        </button>
+      </header>
+
+      <section class="toolbar" aria-label="工具栏">
+        <button id="new-session" class="tool-button primary" type="button" title="新建连接配置">
+          <i data-lucide="file-plus-2"></i>
+          <span>新建</span>
+        </button>
+        <button id="quick-connect" class="tool-button" type="button" title="快速连接">
+          <i data-lucide="bolt"></i>
+          <span>连接</span>
+        </button>
+        <button id="disconnect-tab" class="tool-button" type="button" title="断开当前 SSH 会话">
+          <i data-lucide="plug-zap"></i>
+          <span>断开</span>
+        </button>
+        <button id="reconnect-tab" class="tool-button" type="button" title="重新连接当前标签">
+          <i data-lucide="rotate-cw"></i>
+          <span>重连</span>
+        </button>
+        <div class="toolbar-separator"></div>
+        <button id="duplicate-tab" class="tool-button" type="button" title="复制当前标签">
+          <i data-lucide="copy-plus"></i>
+          <span>复制</span>
+        </button>
+        <button id="open-terminal-search" class="tool-button" type="button" title="查找终端输出">
+          <i data-lucide="search"></i>
+          <span>查找</span>
+        </button>
+        <button id="open-sftp" class="tool-button" type="button" title="SFTP 文件传输">
+          <i data-lucide="folder-sync"></i>
+          <span>SFTP</span>
+        </button>
+        <button id="open-tunnels" class="tool-button" type="button" title="SSH 隧道 / 端口转发">
+          <i data-lucide="route"></i>
+          <span>隧道</span>
+        </button>
+        <button id="open-preferences" class="tool-button" type="button" title="选项">
+          <i data-lucide="settings-2"></i>
+          <span>选项</span>
+        </button>
+      </section>
+
+      <main class="workspace">
+        <aside id="sidebar" class="session-sidebar">
+          <div class="sidebar-head">
+            <h1>连接配置</h1>
+            <div class="sidebar-actions">
+              <button id="import-profiles" class="icon-button" type="button" title="导入连接配置">
+                <i data-lucide="upload"></i>
+              </button>
+              <button id="export-profiles" class="icon-button" type="button" title="导出连接配置">
+                <i data-lucide="download"></i>
+              </button>
+              <button id="collapse-sidebar" class="icon-button" type="button" title="隐藏侧栏">
+                <i data-lucide="panel-left-close"></i>
+              </button>
+            </div>
+          </div>
+          <label class="search-box" for="session-search">
+            <i data-lucide="search"></i>
+            <input id="session-search" type="search" placeholder="搜索连接配置或主机" />
+          </label>
+          <div id="session-list" class="session-list"></div>
+        </aside>
+
+        <section class="terminal-workbench">
+          <div class="tab-strip-shell">
+            <button id="show-sidebar" class="icon-button sidebar-restore" type="button" title="显示侧栏">
+              <i data-lucide="panel-left-open"></i>
+            </button>
+            <div id="tab-strip" class="tab-strip"></div>
+            <button id="new-tab" class="icon-button" type="button" title="新建标签">
+              <i data-lucide="plus"></i>
+            </button>
+          </div>
+          <div id="terminal-stack" class="terminal-stack">
+            <div id="terminal-search" class="terminal-search hidden" role="search">
+              <label class="terminal-search-input" for="terminal-search-query">
+                <i data-lucide="search"></i>
+                <input id="terminal-search-query" autocomplete="off" spellcheck="false" placeholder="查找" />
+              </label>
+              <span id="terminal-search-count" class="terminal-search-count">0/0</span>
+              <button id="terminal-search-previous" class="icon-button" type="button" title="上一处">
+                <i data-lucide="chevron-up"></i>
+              </button>
+              <button id="terminal-search-next" class="icon-button" type="button" title="下一处">
+                <i data-lucide="chevron-down"></i>
+              </button>
+              <div class="terminal-search-separator"></div>
+              <button id="terminal-search-case" class="icon-button search-toggle" type="button" title="区分大小写" aria-pressed="false">
+                <i data-lucide="case-sensitive"></i>
+              </button>
+              <button id="terminal-search-word" class="icon-button search-toggle" type="button" title="整词匹配" aria-pressed="false">
+                <i data-lucide="whole-word"></i>
+              </button>
+              <button id="terminal-search-regex" class="icon-button search-toggle" type="button" title="正则表达式" aria-pressed="false">
+                <i data-lucide="regex"></i>
+              </button>
+              <button id="terminal-search-close" class="icon-button" type="button" title="关闭查找">
+                <i data-lucide="x"></i>
+              </button>
+            </div>
+            <div id="empty-workspace" class="empty-workspace">
+              <div class="empty-mark">
+                <i data-lucide="terminal-square"></i>
+              </div>
+              <strong>未连接</strong>
+              <div class="empty-actions">
+                <button id="empty-connect" class="action-button primary" type="button">
+                  新建连接
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <span id="status-left">就绪</span>
+        <span id="status-right">0 个连接配置</span>
+      </footer>
+    </div>
+
+    <dialog id="connection-dialog" class="modal">
+      <form id="profile-form" class="modal-card">
+        <header class="modal-head">
+          <div>
+            <strong id="dialog-title">新建连接配置</strong>
+            <span id="dialog-subtitle">SSH</span>
+          </div>
+          <button class="icon-button" id="close-dialog" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="form-grid">
+          <label class="wide">
+            <span>名称</span>
+            <input id="profile-name" name="name" autocomplete="off" />
+          </label>
+          <label>
+            <span>分组</span>
+            <input id="profile-group" name="group" autocomplete="off" placeholder="默认" />
+          </label>
+          <label class="wide">
+            <span>主机</span>
+            <input id="profile-host" name="host" required autocomplete="off" />
+          </label>
+          <label>
+            <span>端口</span>
+            <input id="profile-port" name="port" type="number" min="1" max="65535" value="22" required />
+          </label>
+          <label>
+            <span>用户名</span>
+            <input id="profile-username" name="username" required autocomplete="username" />
+          </label>
+        </div>
+
+        <fieldset class="auth-fieldset">
+          <legend>认证</legend>
+          <div class="segmented-control">
+            <label>
+              <input type="radio" name="auth-method" value="password" checked />
+              <span>密码</span>
+            </label>
+            <label>
+              <input type="radio" name="auth-method" value="privateKey" />
+              <span>私钥</span>
+            </label>
+          </div>
+
+          <div id="password-fields" class="auth-panel">
+            <label>
+              <span>密码</span>
+              <input id="profile-password" name="password" type="password" autocomplete="current-password" />
+            </label>
+            <label class="inline-check">
+              <input id="profile-remember" type="checkbox" />
+              <span>保存密码</span>
+            </label>
+          </div>
+
+          <div id="key-fields" class="auth-panel hidden">
+            <label>
+              <span>私钥文件</span>
+              <div class="path-picker">
+                <input id="profile-key-path" name="privateKeyPath" readonly />
+                <button id="browse-key" class="icon-button" type="button" title="选择私钥">
+                  <i data-lucide="folder-open"></i>
+                </button>
+              </div>
+            </label>
+            <label>
+              <span>Passphrase</span>
+              <input id="profile-passphrase" type="password" autocomplete="off" />
+            </label>
+          </div>
+        </fieldset>
+
+        <footer class="modal-actions">
+          <label class="inline-check">
+            <input id="profile-save" type="checkbox" checked />
+            <span>保存为连接配置</span>
+          </label>
+          <div>
+            <button id="save-profile" class="action-button" type="button">保存</button>
+            <button class="action-button primary" type="submit">连接</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="preferences-dialog" class="modal">
+      <form class="modal-card small" method="dialog">
+        <header class="modal-head">
+          <div>
+            <strong>选项</strong>
+            <span>终端</span>
+          </div>
+          <button class="icon-button" value="cancel" type="submit" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+        <div class="form-grid single">
+          <label>
+            <span>字号</span>
+            <input id="pref-font-size" type="number" min="11" max="24" />
+          </label>
+          <label>
+            <span>主题</span>
+            <select id="pref-theme">
+              <option value="classic">Classic Dark</option>
+              <option value="midnight">Midnight</option>
+              <option value="paper">Paper</option>
+            </select>
+          </label>
+          <label class="inline-check">
+            <input id="pref-cursor-blink" type="checkbox" />
+            <span>光标闪烁</span>
+          </label>
+        </div>
+        <footer class="modal-actions right">
+          <button id="save-preferences" class="action-button primary" value="default" type="submit">应用</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="tunnel-dialog" class="modal tunnel-modal">
+      <section class="modal-card tunnel-card">
+        <header class="modal-head">
+          <div>
+            <strong>SSH 隧道</strong>
+            <span id="tunnel-subtitle">选择一个已连接的 SSH 标签</span>
+          </div>
+          <button id="close-tunnels" class="icon-button" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="tunnel-layout">
+          <form id="tunnel-form" class="tunnel-form">
+            <fieldset class="auth-fieldset">
+              <legend>类型</legend>
+              <div class="segmented-control tunnel-type-control">
+                <label>
+                  <input type="radio" name="tunnel-type" value="local" checked />
+                  <span>本地转发</span>
+                </label>
+                <label>
+                  <input type="radio" name="tunnel-type" value="remote" />
+                  <span>远端转发</span>
+                </label>
+                <label>
+                  <input type="radio" name="tunnel-type" value="dynamic" />
+                  <span>SOCKS5 代理</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <div class="form-grid tunnel-form-grid">
+              <label class="wide">
+                <span>名称</span>
+                <input id="tunnel-name" autocomplete="off" placeholder="自动生成" />
+              </label>
+              <label>
+                <span id="tunnel-bind-host-label">本地监听地址</span>
+                <input id="tunnel-bind-host" autocomplete="off" value="127.0.0.1" />
+              </label>
+              <label>
+                <span id="tunnel-bind-port-label">本地监听端口</span>
+                <input id="tunnel-bind-port" type="number" min="0" max="65535" value="8080" required />
+              </label>
+              <label id="tunnel-target-host-row">
+                <span id="tunnel-target-host-label">远端目标主机</span>
+                <input id="tunnel-target-host" autocomplete="off" value="127.0.0.1" />
+              </label>
+              <label id="tunnel-target-port-row">
+                <span id="tunnel-target-port-label">远端目标端口</span>
+                <input id="tunnel-target-port" type="number" min="1" max="65535" value="80" />
+              </label>
+            </div>
+
+            <footer class="modal-actions right tunnel-form-actions">
+              <button class="action-button primary" type="submit">新增隧道</button>
+            </footer>
+          </form>
+
+          <section class="tunnel-list-panel">
+            <header>
+              <div>
+                <strong>当前会话隧道</strong>
+                <span id="tunnel-summary">0 项</span>
+              </div>
+              <button id="refresh-tunnels" class="icon-button" type="button" title="刷新隧道">
+                <i data-lucide="refresh-cw"></i>
+              </button>
+            </header>
+            <div id="tunnel-list" class="tunnel-list">
+              <div class="tunnel-empty">
+                <i data-lucide="route-off"></i>
+                <span>暂无隧道</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="modal-actions right">
+          <button id="tunnels-close-footer" class="action-button" type="button">关闭</button>
+        </footer>
+      </section>
+    </dialog>
+
+    <dialog id="sftp-dialog" class="modal wide-modal">
+      <section class="modal-card sftp-card">
+        <header class="modal-head">
+          <div>
+            <strong>SFTP 文件传输</strong>
+            <span id="sftp-subtitle">选择一个已连接的 SSH 标签</span>
+          </div>
+          <button id="close-sftp" class="icon-button" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="sftp-layout">
+          <section class="file-pane" aria-label="本地文件">
+            <header class="file-pane-head">
+              <div>
+                <strong>本地</strong>
+                <span id="sftp-local-count">0 项</span>
+              </div>
+              <div class="file-pane-actions">
+                <button id="local-up" class="icon-button" type="button" title="上级目录">
+                  <i data-lucide="corner-left-up"></i>
+                </button>
+                <button id="local-refresh" class="icon-button" type="button" title="刷新本地">
+                  <i data-lucide="refresh-cw"></i>
+                </button>
+                <button id="local-mkdir" class="icon-button" type="button" title="新建本地目录">
+                  <i data-lucide="folder-plus"></i>
+                </button>
+                <button id="local-rename" class="icon-button" type="button" title="重命名本地项目">
+                  <i data-lucide="square-pen"></i>
+                </button>
+                <button id="local-delete" class="icon-button danger" type="button" title="删除本地项目">
+                  <i data-lucide="trash-2"></i>
+                </button>
+              </div>
+            </header>
+            <div class="path-line">
+              <input id="sftp-local-path" aria-label="本地路径" />
+              <button id="local-go" class="icon-button" type="button" title="打开本地路径">
+                <i data-lucide="arrow-right"></i>
+              </button>
+            </div>
+            <div class="file-list-head">
+              <span>名称</span>
+              <span>大小</span>
+              <span>修改时间</span>
+            </div>
+            <div id="sftp-local-list" class="file-list"></div>
+          </section>
+
+          <div class="transfer-rail" aria-label="传输操作">
+            <button id="sftp-upload" class="transfer-button" type="button" title="上传到远端">
+              <i data-lucide="arrow-right"></i>
+              <span>上传</span>
+            </button>
+            <button id="sftp-download" class="transfer-button" type="button" title="下载到本地">
+              <i data-lucide="arrow-left"></i>
+              <span>下载</span>
+            </button>
+          </div>
+
+          <section class="file-pane" aria-label="远端文件">
+            <header class="file-pane-head">
+              <div>
+                <strong>远端</strong>
+                <span id="sftp-remote-count">0 项</span>
+              </div>
+              <div class="file-pane-actions">
+                <button id="remote-up" class="icon-button" type="button" title="上级目录">
+                  <i data-lucide="corner-left-up"></i>
+                </button>
+                <button id="remote-refresh" class="icon-button" type="button" title="刷新远端">
+                  <i data-lucide="refresh-cw"></i>
+                </button>
+                <button id="remote-mkdir" class="icon-button" type="button" title="新建远端目录">
+                  <i data-lucide="folder-plus"></i>
+                </button>
+                <button id="remote-rename" class="icon-button" type="button" title="重命名远端项目">
+                  <i data-lucide="square-pen"></i>
+                </button>
+                <button id="remote-delete" class="icon-button danger" type="button" title="删除远端项目">
+                  <i data-lucide="trash-2"></i>
+                </button>
+              </div>
+            </header>
+            <div class="path-line">
+              <input id="sftp-remote-path" aria-label="远端路径" />
+              <button id="remote-go" class="icon-button" type="button" title="打开远端路径">
+                <i data-lucide="arrow-right"></i>
+              </button>
+            </div>
+            <div class="file-list-head">
+              <span>名称</span>
+              <span>大小</span>
+              <span>修改时间</span>
+            </div>
+            <div id="sftp-remote-list" class="file-list"></div>
+          </section>
+        </div>
+
+        <div id="sftp-input-overlay" class="sftp-input-overlay hidden">
+          <form id="sftp-input-form" class="sftp-input-card">
+            <header>
+              <strong id="sftp-input-title">输入名称</strong>
+              <button id="sftp-input-cancel" class="icon-button" type="button" title="取消">
+                <i data-lucide="x"></i>
+              </button>
+            </header>
+            <label>
+              <span id="sftp-input-label">名称</span>
+              <input id="sftp-input-value" autocomplete="off" />
+            </label>
+            <footer>
+              <button id="sftp-input-cancel-footer" class="action-button" type="button">取消</button>
+              <button class="action-button primary" type="submit">确定</button>
+            </footer>
+          </form>
+        </div>
+
+        <section class="sftp-queue-panel" aria-label="传输队列">
+          <header>
+            <div>
+              <strong>传输队列</strong>
+              <span id="sftp-queue-summary">0 项</span>
+            </div>
+            <button id="sftp-clear-completed" class="icon-button" type="button" title="清除已完成">
+              <i data-lucide="list-x"></i>
+            </button>
+          </header>
+          <div id="sftp-transfer-queue" class="sftp-transfer-queue">
+            <div class="queue-empty">
+              <i data-lucide="list-checks"></i>
+              <span>暂无传输任务</span>
+            </div>
+          </div>
+        </section>
+
+        <footer class="modal-actions sftp-footer">
+          <div class="sftp-transfer-status">
+            <div class="sftp-transfer-line">
+              <span id="sftp-status">就绪</span>
+              <strong id="sftp-progress-percent">0%</strong>
+            </div>
+            <div class="sftp-progress-track">
+              <div id="sftp-progress-fill" class="sftp-progress-fill"></div>
+            </div>
+            <span id="sftp-progress-detail" class="sftp-progress-detail">等待传输</span>
+          </div>
+          <button id="sftp-close-footer" class="action-button" type="button">关闭</button>
+        </footer>
+      </section>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/renderer.ts"></script>
+  </body>
+</html>

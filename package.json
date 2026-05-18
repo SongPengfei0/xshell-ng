@@ -1,0 +1,76 @@
+{
+  "name": "xshell-ng",
+  "version": "0.1.0",
+  "description": "A Windows-friendly SSH terminal client inspired by classic tabbed SSH workflows.",
+  "main": "dist/app/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.main.json && vite build",
+    "pack": "npm run build && electron-builder --dir",
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "dist:win": "npm run build && electron-builder --win nsis portable",
+    "dev": "npm run build && electron .",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "keywords": [
+    "ssh",
+    "terminal",
+    "windows",
+    "sftp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "build": {
+    "appId": "com.xshellng.app",
+    "productName": "XShell NG",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "XShell NG"
+    }
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "lucide": "^0.468.0",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/ssh2": "^1.15.2",
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.5.4",
+    "vite": "^8.0.13"
+  }
+}
