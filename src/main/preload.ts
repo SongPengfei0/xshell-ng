@@ -100,6 +100,12 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("window:toggle-full-screen"),
   windowExitFullScreen: (): Promise<boolean> =>
     ipcRenderer.invoke("window:exit-full-screen"),
+  windowMinimize: (): Promise<void> =>
+    ipcRenderer.invoke("window:minimize"),
+  windowToggleMaximize: (): Promise<boolean> =>
+    ipcRenderer.invoke("window:toggle-maximize"),
+  windowClose: (): Promise<void> =>
+    ipcRenderer.invoke("window:close"),
   onTransferProgress: (callback: (payload: TransferProgressEvent) => void) =>
     on<TransferProgressEvent>("sftp:transfer-progress", callback),
   onData: (callback: (payload: SshDataEvent) => void) =>

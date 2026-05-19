@@ -5,12 +5,16 @@
   "main": "dist/app/main/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.main.json && vite build",
+    "check": "npm run typecheck && npm run build",
+    "ci": "npm run check",
     "pack": "npm run build && electron-builder --dir",
     "dist:portable": "npm run build && electron-builder --win portable",
     "dist:win": "npm run build && electron-builder --win nsis portable",
     "dev": "npm run build && electron .",
     "start": "npm run build && electron .",
-    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+    "smoke": "node scripts/electron-smoke.mjs",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "audit:moderate": "npm audit --audit-level=moderate --omit=optional"
   },
   "keywords": [
     "ssh",
@@ -20,6 +24,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
   "build": {
     "appId": "com.xshellng.app",
     "productName": "XShell NG",

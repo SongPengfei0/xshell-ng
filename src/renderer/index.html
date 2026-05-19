@@ -18,7 +18,7 @@
             <span>SSH Client</span>
           </div>
         </div>
-        <nav id="fullscreen-menu" class="fullscreen-menu" aria-label="全屏菜单">
+        <nav id="fullscreen-menu" class="fullscreen-menu" aria-label="应用菜单">
           <div class="fullscreen-menu-group">
             <button class="fullscreen-menu-trigger" type="button">文件</button>
             <div class="fullscreen-menu-popover">
@@ -28,10 +28,17 @@
               <button type="button" data-command="import-profiles">导入连接配置</button>
               <button type="button" data-command="export-profiles">导出连接配置</button>
               <span class="menu-divider"></span>
-              <button type="button" data-command="close-tab">关闭标签</button>
-              <button type="button" data-command="reconnect-tab">重新连接</button>
+              <button type="button" data-command="close-window">关闭窗口</button>
+            </div>
+          </div>
+          <div class="fullscreen-menu-group">
+            <button class="fullscreen-menu-trigger" type="button">会话</button>
+            <div class="fullscreen-menu-popover">
+              <button type="button" data-command="disconnect-tab">断开当前会话</button>
+              <button type="button" data-command="reconnect-tab">重新连接当前标签</button>
+              <button type="button" data-command="duplicate-tab">复制当前标签</button>
               <span class="menu-divider"></span>
-              <button type="button" data-command="exit-full-screen">退出全屏</button>
+              <button type="button" data-command="close-tab">关闭标签</button>
             </div>
           </div>
           <div class="fullscreen-menu-group">
@@ -50,6 +57,7 @@
             <button class="fullscreen-menu-trigger" type="button">查看</button>
             <div class="fullscreen-menu-popover">
               <button type="button" data-command="toggle-full-screen">切换全屏</button>
+              <button type="button" data-command="exit-full-screen">退出全屏</button>
               <button type="button" data-command="toggle-sidebar">切换侧栏</button>
             </div>
           </div>
@@ -58,7 +66,7 @@
             <div class="fullscreen-menu-popover">
               <button type="button" data-command="open-sftp">SFTP 文件传输</button>
               <button type="button" data-command="open-tunnels">SSH 隧道</button>
-              <button type="button" data-command="open-preferences">选项</button>
+              <button type="button" data-command="open-preferences">设置</button>
             </div>
           </div>
           <div class="fullscreen-menu-group">
@@ -72,17 +80,29 @@
           <i data-lucide="minimize-2"></i>
           <span>退出全屏</span>
         </button>
+        <div class="window-controls" aria-label="窗口控制">
+          <button id="window-minimize" class="window-control" type="button" title="最小化">
+            <i data-lucide="minus"></i>
+          </button>
+          <button id="window-maximize" class="window-control" type="button" title="最大化">
+            <i data-lucide="square"></i>
+          </button>
+          <button id="window-close" class="window-control close" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
       </header>
 
       <section class="toolbar" aria-label="工具栏">
         <button id="new-session" class="tool-button primary" type="button" title="新建连接配置">
           <i data-lucide="file-plus-2"></i>
-          <span>新建</span>
+          <span>新建配置</span>
         </button>
         <button id="quick-connect" class="tool-button" type="button" title="快速连接">
           <i data-lucide="bolt"></i>
-          <span>连接</span>
+          <span>快速连接</span>
         </button>
+        <div class="toolbar-separator"></div>
         <button id="disconnect-tab" class="tool-button" type="button" title="断开当前 SSH 会话">
           <i data-lucide="plug-zap"></i>
           <span>断开</span>
@@ -91,11 +111,11 @@
           <i data-lucide="rotate-cw"></i>
           <span>重连</span>
         </button>
-        <div class="toolbar-separator"></div>
         <button id="duplicate-tab" class="tool-button" type="button" title="复制当前标签">
           <i data-lucide="copy-plus"></i>
-          <span>复制</span>
+          <span>复制标签</span>
         </button>
+        <div class="toolbar-separator"></div>
         <button id="open-terminal-search" class="tool-button" type="button" title="查找终端输出">
           <i data-lucide="search"></i>
           <span>查找</span>
@@ -108,9 +128,10 @@
           <i data-lucide="route"></i>
           <span>隧道</span>
         </button>
-        <button id="open-preferences" class="tool-button" type="button" title="选项">
+        <div class="toolbar-separator"></div>
+        <button id="open-preferences" class="tool-button" type="button" title="设置">
           <i data-lucide="settings-2"></i>
-          <span>选项</span>
+          <span>设置</span>
         </button>
       </section>
 
@@ -289,7 +310,7 @@
         <header class="modal-head">
           <div>
             <strong>选项</strong>
-            <span>终端</span>
+            <span>界面和终端</span>
           </div>
           <button class="icon-button" value="cancel" type="submit" title="关闭">
             <i data-lucide="x"></i>
@@ -303,9 +324,9 @@
           <label>
             <span>主题</span>
             <select id="pref-theme">
-              <option value="classic">Classic Dark</option>
-              <option value="midnight">Midnight</option>
-              <option value="paper">Paper</option>
+              <option value="classic">Classic Blue</option>
+              <option value="midnight">Midnight Ops</option>
+              <option value="paper">Paper Light</option>
             </select>
           </label>
           <label class="inline-check">

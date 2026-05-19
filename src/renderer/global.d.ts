@@ -66,6 +66,9 @@ declare global {
       tunnelClose: (request: TunnelCloseRequest) => Promise<void>;
       windowToggleFullScreen: () => Promise<boolean>;
       windowExitFullScreen: () => Promise<boolean>;
+      windowMinimize: () => Promise<void>;
+      windowToggleMaximize: () => Promise<boolean>;
+      windowClose: () => Promise<void>;
       onTransferProgress: (callback: (payload: TransferProgressEvent) => void) => () => void;
       onData: (callback: (payload: SshDataEvent) => void) => () => void;
       onStatus: (callback: (payload: SshStatusEvent) => void) => () => void;

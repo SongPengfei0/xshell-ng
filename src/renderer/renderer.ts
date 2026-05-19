@@ -5,7 +5,7 @@ import {
   type ISearchResultChangeEvent
 } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { createIcons, icons } from "lucide";
 import type {
@@ -34,10 +34,22 @@ interface TerminalTab {
   status: "idle" | "connecting" | "connected" | "disconnected" | "error";
 }
 
+const themeIds = ["classic", "midnight", "paper"] as const;
+
+type ThemeId = (typeof themeIds)[number];
+
 interface Preferences {
   fontSize: number;
-  theme: "classic" | "midnight" | "paper";
+  theme: ThemeId;
   cursorBlink: boolean;
+}
+
+interface AppTheme {
+  label: string;
+  colorScheme: "light" | "dark";
+  ui: Record<`--${string}`, string>;
+  terminal: ITheme;
+  searchDecorations: ISearchOptions["decorations"];
 }
 
 interface FilePaneState {
@@ -90,8 +102,21 @@ const $ = <T extends HTMLElement>(selector: string) => {
 };
 
 const elements = {
+  topbar: $(".topbar"),
   exitFullscreen: $("#exit-fullscreen") as HTMLButtonElement,
+  windowMinimize: $("#window-minimize") as HTMLButtonElement,
+  windowMaximize: $("#window-maximize") as HTMLButtonElement,
+  windowClose: $("#window-close") as HTMLButtonElement,
   fullscreenMenu: $("#fullscreen-menu"),
+  newSession: $("#new-session") as HTMLButtonElement,
+  quickConnect: $("#quick-connect") as HTMLButtonElement,
+  disconnectTab: $("#disconnect-tab") as HTMLButtonElement,
+  reconnectTab: $("#reconnect-tab") as HTMLButtonElement,
+  duplicateTab: $("#duplicate-tab") as HTMLButtonElement,
+  openTerminalSearch: $("#open-terminal-search") as HTMLButtonElement,
+  openSftp: $("#open-sftp") as HTMLButtonElement,
+  openTunnels: $("#open-tunnels") as HTMLButtonElement,
+  openPreferences: $("#open-preferences") as HTMLButtonElement,
   sidebar: $("#sidebar"),
   sessionList: $("#session-list"),
   sessionSearch: $("#session-search") as HTMLInputElement,
@@ -173,6 +198,7 @@ let activeTabId: string | undefined;
 let editingProfileId: string | undefined;
 let preferences: Preferences = loadPreferences();
 let toastTimer: number | undefined;
+let menuCloseTimer: number | undefined;
 let pendingSftpInput: ((value: string | undefined) => void) | undefined;
 let isTerminalSearchOpen = false;
 let activeSftpTransferId: string | undefined;
@@ -185,66 +211,325 @@ let sftpState: SftpState = {
   remote: { path: ".", entries: [] }
 };
 
-const terminalThemes = {
+const appThemes: Record<ThemeId, AppTheme> = {
   classic: {
-    background: "#071326",
-    foreground: "#dbe8ff",
-    cursor: "#00c2ff",
-    selectionBackground: "#123d9f",
-    black: "#08111f",
-    red: "#ff6b7c",
-    green: "#34d399",
-    yellow: "#fbbf24",
-    blue: "#3b82ff",
-    magenta: "#a78bfa",
-    cyan: "#00c2ff",
-    white: "#e8f0ff",
-    brightBlack: "#64748b",
-    brightRed: "#fb7185",
-    brightGreen: "#86efac",
-    brightYellow: "#fde68a",
-    brightBlue: "#73a7ff",
-    brightMagenta: "#c4b5fd",
-    brightCyan: "#67e8f9",
-    brightWhite: "#ffffff"
+    label: "Classic Blue",
+    colorScheme: "light",
+    ui: {
+      "--klein": "#1247b7",
+      "--klein-deep": "#0b255f",
+      "--klein-bright": "#2563eb",
+      "--klein-soft": "#e8f0ff",
+      "--klein-panel": "#f7faff",
+      "--cyan": "#0ea5c6",
+      "--success": "#168a5b",
+      "--warning": "#b77912",
+      "--bg": "#edf3ff",
+      "--panel": "#ffffff",
+      "--panel-soft": "#f6f9ff",
+      "--line": "#c7d6ee",
+      "--line-strong": "#90a8d5",
+      "--text": "#13213b",
+      "--muted": "#61718d",
+      "--accent": "#1247b7",
+      "--accent-strong": "#0b255f",
+      "--accent-soft": "#e8f0ff",
+      "--danger": "#c2410c",
+      "--terminal-frame": "#071326",
+      "--app-glow": "rgba(18, 71, 183, 0.09)",
+      "--scrollbar-track": "#eef4ff",
+      "--scrollbar-thumb": "#9fb7eb",
+      "--topbar-bg": "linear-gradient(90deg, #0b255f, #1247b7, #0877c4)",
+      "--topbar-border": "rgba(255, 255, 255, 0.14)",
+      "--topbar-text": "#ffffff",
+      "--topbar-muted": "rgba(255, 255, 255, 0.74)",
+      "--topbar-hover": "rgba(255, 255, 255, 0.14)",
+      "--brand-border": "rgba(255, 255, 255, 0.36)",
+      "--brand-bg": "rgba(255, 255, 255, 0.16)",
+      "--brand-glow": "rgba(14, 165, 198, 0.24)",
+      "--menu-bg": "#ffffff",
+      "--menu-border": "rgba(18, 71, 183, 0.22)",
+      "--menu-shadow": "rgba(0, 28, 96, 0.2)",
+      "--menu-text": "#1f2937",
+      "--menu-hover-bg": "#e8f0ff",
+      "--menu-hover-text": "#1247b7",
+      "--menu-divider": "#d6e1f7",
+      "--toolbar-bg": "linear-gradient(#f9fbff, #e7efff)",
+      "--toolbar-border": "#b8c9ec",
+      "--toolbar-shadow": "#ffffff",
+      "--control-bg": "#ffffff",
+      "--control-soft-bg": "#f7faff",
+      "--control-shadow": "rgba(255, 255, 255, 0.85)",
+      "--button-hover-bg": "#ffffff",
+      "--button-hover-border": "#9fb7eb",
+      "--button-hover-text": "#1247b7",
+      "--primary-shadow": "rgba(18, 71, 183, 0.18)",
+      "--sidebar-bg": "linear-gradient(180deg, #f9fbff, #eff5ff)",
+      "--sidebar-head-bg": "rgba(255, 255, 255, 0.64)",
+      "--row-hover-bg": "#ffffff",
+      "--row-hover-border": "#b7c8ef",
+      "--row-hover-shadow": "rgba(18, 71, 183, 0.08)",
+      "--tabbar-bg": "linear-gradient(180deg, #dce7ff, #c7d8ff)",
+      "--tabbar-border": "#00143f",
+      "--tab-bg": "#f7faff",
+      "--tab-text": "#203761",
+      "--tab-border": "#9fb4e4",
+      "--tab-active-bg": "#071326",
+      "--tab-active-text": "#ffffff",
+      "--terminal-empty-bg": "radial-gradient(circle at 50% 36%, rgba(18, 71, 183, 0.32), transparent 240px), linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%), #071326",
+      "--status-bg": "#f7faff",
+      "--status-text": "#49607f",
+      "--modal-scrim": "rgba(0, 17, 64, 0.48)",
+      "--modal-bg": "#ffffff",
+      "--modal-head-bg": "linear-gradient(180deg, #f8fbff, #edf4ff)",
+      "--danger-soft": "#fff1f2",
+      "--success-soft": "#dcfce7",
+      "--queue-track": "#dbe7ff",
+      "--progress-bg": "#dbe7ff"
+    },
+    terminal: {
+      background: "#071326",
+      foreground: "#dbe8ff",
+      cursor: "#00d4ff",
+      selectionBackground: "#123d9f",
+      black: "#08111f",
+      red: "#ff6b7c",
+      green: "#34d399",
+      yellow: "#fbbf24",
+      blue: "#3b82ff",
+      magenta: "#a78bfa",
+      cyan: "#00c2ff",
+      white: "#e8f0ff",
+      brightBlack: "#64748b",
+      brightRed: "#fb7185",
+      brightGreen: "#86efac",
+      brightYellow: "#fde68a",
+      brightBlue: "#73a7ff",
+      brightMagenta: "#c4b5fd",
+      brightCyan: "#67e8f9",
+      brightWhite: "#ffffff"
+    },
+    searchDecorations: {
+      matchBackground: "#fff1a8",
+      matchBorder: "#d97706",
+      matchOverviewRuler: "#d97706",
+      activeMatchBackground: "#b7ccff",
+      activeMatchBorder: "#1247b7",
+      activeMatchColorOverviewRuler: "#1247b7"
+    }
   },
   midnight: {
-    background: "#061021",
-    foreground: "#eaf2ff",
-    cursor: "#00c2ff",
-    selectionBackground: "#0d3b91",
-    black: "#061021",
-    red: "#fb7185",
-    green: "#34d399",
-    yellow: "#fbbf24",
-    blue: "#2f6cff",
-    magenta: "#c084fc",
-    cyan: "#00c2ff",
-    white: "#e5e7eb"
+    label: "Midnight Ops",
+    colorScheme: "dark",
+    ui: {
+      "--klein": "#60a5fa",
+      "--klein-deep": "#08111f",
+      "--klein-bright": "#22d3ee",
+      "--klein-soft": "#10243a",
+      "--klein-panel": "#131f31",
+      "--cyan": "#2dd4bf",
+      "--success": "#34d399",
+      "--warning": "#f59e0b",
+      "--bg": "#0d1420",
+      "--panel": "#151f2e",
+      "--panel-soft": "#101927",
+      "--line": "#2a3a52",
+      "--line-strong": "#3a516f",
+      "--text": "#e6edf7",
+      "--muted": "#8fa1bb",
+      "--accent": "#60a5fa",
+      "--accent-strong": "#22d3ee",
+      "--accent-soft": "#10243a",
+      "--danger": "#fb7185",
+      "--terminal-frame": "#070b12",
+      "--app-glow": "rgba(34, 211, 238, 0.08)",
+      "--scrollbar-track": "#101927",
+      "--scrollbar-thumb": "#39526f",
+      "--topbar-bg": "linear-gradient(90deg, #070b12, #111827, #12303f)",
+      "--topbar-border": "rgba(148, 163, 184, 0.2)",
+      "--topbar-text": "#e6edf7",
+      "--topbar-muted": "rgba(226, 232, 240, 0.68)",
+      "--topbar-hover": "rgba(148, 163, 184, 0.16)",
+      "--brand-border": "rgba(148, 163, 184, 0.34)",
+      "--brand-bg": "rgba(148, 163, 184, 0.12)",
+      "--brand-glow": "rgba(45, 212, 191, 0.28)",
+      "--menu-bg": "#172235",
+      "--menu-border": "rgba(96, 165, 250, 0.28)",
+      "--menu-shadow": "rgba(0, 0, 0, 0.42)",
+      "--menu-text": "#e6edf7",
+      "--menu-hover-bg": "#213452",
+      "--menu-hover-text": "#7dd3fc",
+      "--menu-divider": "#2a3a52",
+      "--toolbar-bg": "linear-gradient(#172235, #111b2b)",
+      "--toolbar-border": "#2a3a52",
+      "--toolbar-shadow": "rgba(255, 255, 255, 0.04)",
+      "--control-bg": "#172235",
+      "--control-soft-bg": "#111b2b",
+      "--control-shadow": "rgba(255, 255, 255, 0.04)",
+      "--button-hover-bg": "#1d2b42",
+      "--button-hover-border": "#3d5875",
+      "--button-hover-text": "#7dd3fc",
+      "--primary-shadow": "rgba(34, 211, 238, 0.18)",
+      "--sidebar-bg": "linear-gradient(180deg, #121d2d, #0f1724)",
+      "--sidebar-head-bg": "rgba(22, 32, 48, 0.88)",
+      "--row-hover-bg": "#172235",
+      "--row-hover-border": "#36506f",
+      "--row-hover-shadow": "rgba(0, 0, 0, 0.24)",
+      "--tabbar-bg": "linear-gradient(180deg, #172235, #101927)",
+      "--tabbar-border": "#070b12",
+      "--tab-bg": "#142033",
+      "--tab-text": "#c7d2e5",
+      "--tab-border": "#2a3a52",
+      "--tab-active-bg": "#070b12",
+      "--tab-active-text": "#f8fafc",
+      "--terminal-empty-bg": "radial-gradient(circle at 50% 36%, rgba(34, 211, 238, 0.16), transparent 240px), linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 42%), #070b12",
+      "--status-bg": "#111b2b",
+      "--status-text": "#9fb0c9",
+      "--modal-scrim": "rgba(0, 0, 0, 0.62)",
+      "--modal-bg": "#151f2e",
+      "--modal-head-bg": "linear-gradient(180deg, #1a2638, #121d2d)",
+      "--danger-soft": "#3b1822",
+      "--success-soft": "#102d23",
+      "--queue-track": "#223149",
+      "--progress-bg": "#223149"
+    },
+    terminal: {
+      background: "#070b12",
+      foreground: "#d8e2f0",
+      cursor: "#22d3ee",
+      selectionBackground: "#1d4ed8",
+      black: "#070b12",
+      red: "#fb7185",
+      green: "#34d399",
+      yellow: "#f59e0b",
+      blue: "#60a5fa",
+      magenta: "#c084fc",
+      cyan: "#2dd4bf",
+      white: "#d8e2f0",
+      brightBlack: "#64748b",
+      brightRed: "#fda4af",
+      brightGreen: "#86efac",
+      brightYellow: "#fcd34d",
+      brightBlue: "#93c5fd",
+      brightMagenta: "#d8b4fe",
+      brightCyan: "#99f6e4",
+      brightWhite: "#ffffff"
+    },
+    searchDecorations: {
+      matchBackground: "#7c5d12",
+      matchBorder: "#fbbf24",
+      matchOverviewRuler: "#fbbf24",
+      activeMatchBackground: "#075985",
+      activeMatchBorder: "#22d3ee",
+      activeMatchColorOverviewRuler: "#22d3ee"
+    }
   },
   paper: {
-    background: "#f8fbff",
-    foreground: "#202124",
-    cursor: "#202124",
-    selectionBackground: "#cfe0ff",
-    black: "#202124",
-    red: "#c2410c",
-    green: "#15803d",
-    yellow: "#a16207",
-    blue: "#002fa7",
-    magenta: "#7e22ce",
-    cyan: "#007ea7",
-    white: "#f8fafc"
+    label: "Paper Light",
+    colorScheme: "light",
+    ui: {
+      "--klein": "#256c5a",
+      "--klein-deep": "#163f36",
+      "--klein-bright": "#0f766e",
+      "--klein-soft": "#e3f3ee",
+      "--klein-panel": "#f7faf8",
+      "--cyan": "#19758a",
+      "--success": "#2f7d4f",
+      "--warning": "#a46a12",
+      "--bg": "#f3f6f2",
+      "--panel": "#ffffff",
+      "--panel-soft": "#f7faf8",
+      "--line": "#ccd8d0",
+      "--line-strong": "#9ab0a4",
+      "--text": "#1f2a2a",
+      "--muted": "#65736d",
+      "--accent": "#256c5a",
+      "--accent-strong": "#163f36",
+      "--accent-soft": "#e3f3ee",
+      "--danger": "#b42318",
+      "--terminal-frame": "#f8faf7",
+      "--app-glow": "rgba(37, 108, 90, 0.08)",
+      "--scrollbar-track": "#edf3ef",
+      "--scrollbar-thumb": "#a9beb2",
+      "--topbar-bg": "linear-gradient(90deg, #163f36, #256c5a, #19758a)",
+      "--topbar-border": "rgba(255, 255, 255, 0.18)",
+      "--topbar-text": "#ffffff",
+      "--topbar-muted": "rgba(255, 255, 255, 0.76)",
+      "--topbar-hover": "rgba(255, 255, 255, 0.16)",
+      "--brand-border": "rgba(255, 255, 255, 0.38)",
+      "--brand-bg": "rgba(255, 255, 255, 0.14)",
+      "--brand-glow": "rgba(255, 255, 255, 0.2)",
+      "--menu-bg": "#ffffff",
+      "--menu-border": "rgba(37, 108, 90, 0.22)",
+      "--menu-shadow": "rgba(20, 58, 49, 0.18)",
+      "--menu-text": "#1f2a2a",
+      "--menu-hover-bg": "#e3f3ee",
+      "--menu-hover-text": "#256c5a",
+      "--menu-divider": "#d8e4de",
+      "--toolbar-bg": "linear-gradient(#fbfcfb, #eaf2ee)",
+      "--toolbar-border": "#b9cabe",
+      "--toolbar-shadow": "#ffffff",
+      "--control-bg": "#ffffff",
+      "--control-soft-bg": "#f7faf8",
+      "--control-shadow": "rgba(255, 255, 255, 0.86)",
+      "--button-hover-bg": "#ffffff",
+      "--button-hover-border": "#9ab0a4",
+      "--button-hover-text": "#256c5a",
+      "--primary-shadow": "rgba(37, 108, 90, 0.16)",
+      "--sidebar-bg": "linear-gradient(180deg, #fbfcfb, #edf4f0)",
+      "--sidebar-head-bg": "rgba(255, 255, 255, 0.7)",
+      "--row-hover-bg": "#ffffff",
+      "--row-hover-border": "#b9cabe",
+      "--row-hover-shadow": "rgba(37, 108, 90, 0.08)",
+      "--tabbar-bg": "linear-gradient(180deg, #eef5f1, #dce9e3)",
+      "--tabbar-border": "#bdd0c5",
+      "--tab-bg": "#ffffff",
+      "--tab-text": "#2b3b38",
+      "--tab-border": "#a9beb2",
+      "--tab-active-bg": "#f8faf7",
+      "--tab-active-text": "#1f2a2a",
+      "--terminal-empty-bg": "radial-gradient(circle at 50% 36%, rgba(37, 108, 90, 0.15), transparent 240px), linear-gradient(135deg, rgba(25, 117, 138, 0.08), transparent 42%), #f8faf7",
+      "--status-bg": "#f7faf8",
+      "--status-text": "#52665f",
+      "--modal-scrim": "rgba(24, 49, 43, 0.42)",
+      "--modal-bg": "#ffffff",
+      "--modal-head-bg": "linear-gradient(180deg, #fbfcfb, #edf4f0)",
+      "--danger-soft": "#fff1f0",
+      "--success-soft": "#e4f5e8",
+      "--queue-track": "#dce9e3",
+      "--progress-bg": "#dce9e3"
+    },
+    terminal: {
+      background: "#fbfcf8",
+      foreground: "#1f2a2a",
+      cursor: "#256c5a",
+      selectionBackground: "#cfe3d7",
+      black: "#1f2a2a",
+      red: "#b42318",
+      green: "#2f7d4f",
+      yellow: "#9a6700",
+      blue: "#1d5fbf",
+      magenta: "#7c3aed",
+      cyan: "#19758a",
+      white: "#f8faf7",
+      brightBlack: "#718096",
+      brightRed: "#d92d20",
+      brightGreen: "#16a34a",
+      brightYellow: "#b7791f",
+      brightBlue: "#2563eb",
+      brightMagenta: "#9333ea",
+      brightCyan: "#0891b2",
+      brightWhite: "#ffffff"
+    },
+    searchDecorations: {
+      matchBackground: "#fff1a8",
+      matchBorder: "#a46a12",
+      matchOverviewRuler: "#a46a12",
+      activeMatchBackground: "#cfe3d7",
+      activeMatchBorder: "#256c5a",
+      activeMatchColorOverviewRuler: "#256c5a"
+    }
   }
-};
-
-const terminalSearchDecorations: ISearchOptions["decorations"] = {
-  matchBackground: "#fff1a8",
-  matchBorder: "#d97706",
-  matchOverviewRuler: "#d97706",
-  activeMatchBackground: "#b7ccff",
-  activeMatchBorder: "#002fa7",
-  activeMatchColorOverviewRuler: "#002fa7"
 };
 
 function createId() {
@@ -264,11 +549,33 @@ function saveProfiles() {
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
 }
 
+function isThemeId(value: unknown): value is ThemeId {
+  return typeof value === "string" && themeIds.includes(value as ThemeId);
+}
+
+function getThemeConfig(theme: ThemeId = preferences.theme) {
+  return appThemes[theme];
+}
+
+function applyTheme(theme: ThemeId) {
+  const config = getThemeConfig(theme);
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = config.colorScheme;
+  Object.entries(config.ui).forEach(([name, value]) => {
+    document.documentElement.style.setProperty(name, value);
+  });
+}
+
 function loadPreferences(): Preferences {
   try {
     const raw = localStorage.getItem(PREF_STORAGE_KEY);
     if (raw) {
-      return { fontSize: 14, theme: "classic", cursorBlink: true, ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw) as Partial<Preferences>;
+      return {
+        fontSize: Number(parsed.fontSize || 14),
+        theme: isThemeId(parsed.theme) ? parsed.theme : "classic",
+        cursorBlink: parsed.cursorBlink ?? true
+      };
     }
   } catch {
     // Fall through to defaults.
@@ -349,6 +656,15 @@ function refreshIcons() {
   createIcons({ icons });
 }
 
+function renderThemeOptions() {
+  elements.prefTheme.innerHTML = themeIds
+    .map((themeId) => {
+      const theme = appThemes[themeId];
+      return `<option value="${themeId}">${escapeHtml(theme.label)}</option>`;
+    })
+    .join("");
+}
+
 function renderProfiles() {
   const query = elements.sessionSearch.value.trim().toLowerCase();
   const visibleProfiles = profiles.filter((profile) => {
@@ -413,6 +729,20 @@ function renderProfiles() {
   refreshIcons();
 }
 
+function syncToolbarState() {
+  const activeTab = getActiveTab();
+  const hasTab = Boolean(activeTab);
+  const hasSession = Boolean(activeTab?.sessionId);
+  const isConnected = activeTab?.status === "connected" && hasSession;
+
+  elements.disconnectTab.disabled = !hasSession;
+  elements.reconnectTab.disabled = !hasTab;
+  elements.duplicateTab.disabled = !hasTab;
+  elements.openTerminalSearch.disabled = !hasTab;
+  elements.openSftp.disabled = !isConnected;
+  elements.openTunnels.disabled = !isConnected;
+}
+
 function renderTabs() {
   elements.tabStrip.innerHTML = tabs
     .map((tab) => {
@@ -442,6 +772,7 @@ function renderTabs() {
     tab.element.classList.toggle("active", tab.id === activeTabId);
   });
   refreshIcons();
+  syncToolbarState();
   fitActiveTerminal();
   setStatus(tabs.length ? "终端就绪" : "就绪");
 }
@@ -588,7 +919,7 @@ function getTerminalSearchOptions(incremental = false): ISearchOptions {
     wholeWord: isSearchToggleActive(elements.terminalSearchWord),
     regex: isSearchToggleActive(elements.terminalSearchRegex),
     incremental,
-    decorations: terminalSearchDecorations
+    decorations: getThemeConfig().searchDecorations
   };
 }
 
@@ -716,8 +1047,8 @@ function buildTerminal(profile: SshProfile): TerminalTab {
     lineHeight: 1.12,
     letterSpacing: 0,
     scrollback: 10000,
-    theme: terminalThemes[preferences.theme],
-    allowProposedApi: false,
+    theme: getThemeConfig().terminal,
+    allowProposedApi: true,
     convertEol: true
   });
 
@@ -1083,10 +1414,11 @@ async function reconnectActiveTab() {
 }
 
 function applyPreferences() {
+  applyTheme(preferences.theme);
   for (const tab of tabs) {
     tab.terminal.options.fontSize = preferences.fontSize;
     tab.terminal.options.cursorBlink = preferences.cursorBlink;
-    tab.terminal.options.theme = terminalThemes[preferences.theme];
+    tab.terminal.options.theme = getThemeConfig().terminal;
   }
   fitActiveTerminal();
 }
@@ -1309,15 +1641,56 @@ async function stopTunnel(tunnelId: string) {
   }
 }
 
-function renderWindowState(isFullScreen: boolean) {
+function renderWindowState(isFullScreen: boolean, isMaximized: boolean) {
   document.body.classList.toggle("window-fullscreen", isFullScreen);
+  document.body.classList.toggle("window-maximized", isMaximized);
   elements.exitFullscreen.classList.toggle("hidden", !isFullScreen);
+  elements.windowMaximize.title = isMaximized ? "还原" : "最大化";
+  elements.windowMaximize.innerHTML = isMaximized
+    ? '<i data-lucide="copy"></i>'
+    : '<i data-lucide="square"></i>';
+  refreshIcons();
 }
 
 function blurActiveElement() {
   if (document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
+}
+
+function clearMenuCloseTimer() {
+  window.clearTimeout(menuCloseTimer);
+  menuCloseTimer = undefined;
+}
+
+function closeTopbarMenus() {
+  clearMenuCloseTimer();
+  elements.fullscreenMenu
+    .querySelectorAll<HTMLElement>(".fullscreen-menu-group")
+    .forEach((group) => {
+      group.classList.remove("menu-open");
+      group
+        .querySelector<HTMLButtonElement>(".fullscreen-menu-trigger")
+        ?.setAttribute("aria-expanded", "false");
+    });
+}
+
+function openTopbarMenu(group: HTMLElement) {
+  clearMenuCloseTimer();
+  elements.fullscreenMenu
+    .querySelectorAll<HTMLElement>(".fullscreen-menu-group")
+    .forEach((candidate) => {
+      const isOpen = candidate === group;
+      candidate.classList.toggle("menu-open", isOpen);
+      candidate
+        .querySelector<HTMLButtonElement>(".fullscreen-menu-trigger")
+        ?.setAttribute("aria-expanded", String(isOpen));
+    });
+}
+
+function scheduleCloseTopbarMenus() {
+  clearMenuCloseTimer();
+  menuCloseTimer = window.setTimeout(closeTopbarMenus, 180);
 }
 
 function getEditableTarget() {
@@ -2185,8 +2558,14 @@ function handleCommand(command: string) {
         closeTab(activeTabId);
       }
       break;
+    case "disconnect-tab":
+      void disconnectActiveTab();
+      break;
     case "reconnect-tab":
       void reconnectActiveTab();
+      break;
+    case "duplicate-tab":
+      duplicateActiveTab();
       break;
     case "open-search":
       openTerminalSearch();
@@ -2232,6 +2611,9 @@ function handleCommand(command: string) {
     case "toggle-full-screen":
       void window.xshellBridge.windowToggleFullScreen();
       break;
+    case "close-window":
+      void window.xshellBridge.windowClose();
+      break;
     case "about":
       showToast("XShell NG · 标签式 SSH 客户端");
       break;
@@ -2242,6 +2624,28 @@ function wireEvents() {
   elements.exitFullscreen.addEventListener("click", () => {
     void window.xshellBridge.windowExitFullScreen();
   });
+  elements.windowMinimize.addEventListener("click", () => {
+    void window.xshellBridge.windowMinimize();
+  });
+  elements.windowMaximize.addEventListener("click", () => {
+    void window.xshellBridge.windowToggleMaximize();
+  });
+  elements.windowClose.addEventListener("click", () => {
+    void window.xshellBridge.windowClose();
+  });
+  elements.topbar.addEventListener("dblclick", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("button") || target.closest(".fullscreen-menu-popover")) {
+      return;
+    }
+    void window.xshellBridge.windowToggleMaximize();
+  });
+  elements.fullscreenMenu
+    .querySelectorAll<HTMLElement>(".fullscreen-menu-group")
+    .forEach((group) => {
+      group.addEventListener("pointerenter", () => openTopbarMenu(group));
+      group.addEventListener("pointerleave", scheduleCloseTopbarMenus);
+    });
   elements.fullscreenMenu.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
     const command = target.closest<HTMLElement>("[data-command]")?.dataset.command;
@@ -2250,21 +2654,27 @@ function wireEvents() {
     }
 
     handleCommand(command);
+    closeTopbarMenus();
     blurActiveElement();
   });
-  $("#new-session").addEventListener("click", () => openConnectionDialog());
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeTopbarMenus();
+    }
+  });
+  elements.newSession.addEventListener("click", () => openConnectionDialog());
   $("#new-tab").addEventListener("click", () => openConnectionDialog(undefined, { quick: true }));
-  $("#quick-connect").addEventListener("click", () =>
+  elements.quickConnect.addEventListener("click", () =>
     openConnectionDialog(undefined, { quick: true })
   );
   $("#empty-connect").addEventListener("click", () => openConnectionDialog());
-  $("#disconnect-tab").addEventListener("click", () => void disconnectActiveTab());
-  $("#reconnect-tab").addEventListener("click", () => void reconnectActiveTab());
-  $("#duplicate-tab").addEventListener("click", duplicateActiveTab);
-  $("#open-terminal-search").addEventListener("click", () => openTerminalSearch());
-  $("#open-preferences").addEventListener("click", openPreferences);
-  $("#open-sftp").addEventListener("click", () => void openSftpPanel());
-  $("#open-tunnels").addEventListener("click", () => void openTunnelsPanel());
+  elements.disconnectTab.addEventListener("click", () => void disconnectActiveTab());
+  elements.reconnectTab.addEventListener("click", () => void reconnectActiveTab());
+  elements.duplicateTab.addEventListener("click", duplicateActiveTab);
+  elements.openTerminalSearch.addEventListener("click", () => openTerminalSearch());
+  elements.openPreferences.addEventListener("click", openPreferences);
+  elements.openSftp.addEventListener("click", () => void openSftpPanel());
+  elements.openTunnels.addEventListener("click", () => void openTunnelsPanel());
   $("#import-profiles").addEventListener("click", () => void importProfiles());
   $("#export-profiles").addEventListener("click", () => void exportProfiles());
   $("#close-tunnels").addEventListener("click", () => elements.tunnelDialog.close());
@@ -2564,7 +2974,7 @@ function wireEvents() {
   elements.preferencesDialog.addEventListener("close", () => {
     preferences = {
       fontSize: Number(elements.prefFontSize.value || 14),
-      theme: elements.prefTheme.value as Preferences["theme"],
+      theme: isThemeId(elements.prefTheme.value) ? elements.prefTheme.value : "classic",
       cursorBlink: elements.prefCursorBlink.checked
     };
     savePreferences();
@@ -2648,13 +3058,15 @@ function wireEvents() {
   });
 
   window.xshellBridge.onCommand(handleCommand);
-  window.xshellBridge.onWindowState(({ isFullScreen }) => {
-    renderWindowState(isFullScreen);
+  window.xshellBridge.onWindowState(({ isFullScreen, isMaximized }) => {
+    renderWindowState(isFullScreen, isMaximized);
   });
 
   new ResizeObserver(fitActiveTerminal).observe(elements.terminalStack);
 }
 
+renderThemeOptions();
+applyTheme(preferences.theme);
 wireEvents();
 renderProfiles();
 renderTabs();

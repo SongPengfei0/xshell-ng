@@ -99,6 +99,7 @@ export interface TunnelListEvent {
 
 export interface WindowStateEvent {
   isFullScreen: boolean;
+  isMaximized: boolean;
 }
 
 export interface ResizeRequest {

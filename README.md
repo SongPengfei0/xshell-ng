@@ -4,6 +4,21 @@ XShell NG 是一个面向 Windows 的桌面 SSH 客户端原型，使用 Electro
 
 本项目不会复制商业软件的商标、图标或专有素材；界面采用原创实现，并尽量保留 Windows 用户熟悉的 SSH 客户端操作习惯。
 
+## 项目状态
+
+当前版本是 `0.1.0` 原型阶段，主要面向 Windows 本地使用和开源协作迭代。公开仓库中不应提交真实连接配置、服务器地址、密码、passphrase、私钥或打包产物。
+
+更多维护文档：
+
+- [开发指南](docs/DEVELOPMENT.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [路线图](docs/ROADMAP.md)
+- [GitHub 发布清单](docs/GITHUB_SETUP.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
+- [支持说明](SUPPORT.md)
+- [变更日志](CHANGELOG.md)
+
 ## 概念定义
 
 - 连接配置：保存下来的主机连接信息，包括主机、端口、用户名、认证方式、私钥路径、分组等。
@@ -170,12 +185,16 @@ npm run dev
 
 `npm run dev` 会先执行构建，再启动 Electron。
 
+建议使用 Node.js 22+ 和 npm 10+。
+
 ## 验证
 
 ```powershell
 npm run typecheck
 npm run build
-npm audit --audit-level=moderate
+npm run check
+npm run smoke
+npm run audit:moderate
 ```
 
 Electron 启动烟测示例：
@@ -206,6 +225,9 @@ npm run dist:win
 ## 项目结构
 
 ```text
+.github/                  GitHub Actions、Issue 模板、PR 模板
+docs/                     架构、开发、路线图和 GitHub 发布说明
+scripts/                  本地验证脚本
 src/main/main.ts          Electron main 进程、SSH/SFTP/隧道/本地文件 IPC
 src/main/preload.ts       安全暴露给 renderer 的桥接 API
 src/shared/ipc.ts         main 和 renderer 共用的 IPC 类型
@@ -213,6 +235,15 @@ src/renderer/index.html   界面结构
 src/renderer/renderer.ts  renderer 交互逻辑
 src/renderer/styles.css   界面样式
 ```
+
+生成目录 `dist/`、`release/`、`node_modules/` 和 `.npm-cache/` 已在 `.gitignore` 中忽略，不应提交到 GitHub。
+
+## 开源协作
+
+- 许可证：MIT，见 [LICENSE](LICENSE)。
+- 贡献流程：见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 行为准则：见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 安全问题：见 [SECURITY.md](SECURITY.md)，请不要公开提交未脱敏的安全报告。
 
 ## 已知限制和后续方向
 

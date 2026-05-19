@@ -895,7 +895,8 @@ const sendStatus = (
 const sendWindowState = (win: BrowserWindow) => {
   if (!win.isDestroyed()) {
     win.webContents.send("window:state", {
-      isFullScreen: win.isFullScreen()
+      isFullScreen: win.isFullScreen(),
+      isMaximized: win.isMaximized()
     });
   }
 };
@@ -911,6 +912,16 @@ const setWindowFullScreen = (win: BrowserWindow, isFullScreen: boolean) => {
 const toggleWindowFullScreen = (win: BrowserWindow) =>
   setWindowFullScreen(win, !win.isFullScreen());
 
+const toggleWindowMaximize = (win: BrowserWindow) => {
+  if (win.isMaximized()) {
+    win.unmaximize();
+  } else {
+    win.maximize();
+  }
+  sendWindowState(win);
+  return win.isMaximized();
+};
+
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 1280,
@@ -918,6 +929,8 @@ const createWindow = () => {
     minWidth: 980,
     minHeight: 620,
     title: "XShell NG",
+    frame: false,
+    autoHideMenuBar: true,
     backgroundColor: "#f3f4f6",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -927,12 +940,16 @@ const createWindow = () => {
     }
   });
 
+  win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, "../../renderer/index.html"));
   win.webContents.on("did-finish-load", () => {
     sendWindowState(win);
   });
   win.on("enter-full-screen", () => sendWindowState(win));
   win.on("leave-full-screen", () => sendWindowState(win));
+  win.on("maximize", () => sendWindowState(win));
+  win.on("unmaximize", () => sendWindowState(win));
+  win.on("restore", () => sendWindowState(win));
 
   win.on("closed", () => {
     for (const runtime of sessions.values()) {
@@ -1009,18 +1026,31 @@ const buildMenu = () => {
           click: () => sendCommandToFocusedWindow("export-profiles")
         },
         { type: "separator" },
+        { role: "quit", label: "退出" }
+      ]
+    },
+    {
+      label: "会话",
+      submenu: [
+        {
+          label: "断开当前会话",
+          click: () => sendCommandToFocusedWindow("disconnect-tab")
+        },
+        {
+          label: "重新连接当前标签",
+          accelerator: "Ctrl+Shift+R",
+          click: () => sendCommandToFocusedWindow("reconnect-tab")
+        },
+        {
+          label: "复制当前标签",
+          click: () => sendCommandToFocusedWindow("duplicate-tab")
+        },
+        { type: "separator" },
         {
           label: "关闭标签",
           accelerator: "Ctrl+W",
           click: () => sendCommandToFocusedWindow("close-tab")
-        },
-        {
-          label: "重新连接",
-          accelerator: "Ctrl+Shift+R",
-          click: () => sendCommandToFocusedWindow("reconnect-tab")
-        },
-        { type: "separator" },
-        { role: "quit", label: "退出" }
+        }
       ]
     },
     {
@@ -1090,7 +1120,7 @@ const buildMenu = () => {
           click: () => sendCommandToFocusedWindow("open-tunnels")
         },
         {
-          label: "选项",
+          label: "设置",
           click: () => sendCommandToFocusedWindow("open-preferences")
         }
       ]
@@ -1967,6 +1997,28 @@ ipcMain.handle("window:exit-full-screen", async (event) => {
     return false;
   }
   return setWindowFullScreen(win, false);
+});
+
+ipcMain.handle("window:minimize", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) {
+    win.minimize();
+  }
+});
+
+ipcMain.handle("window:toggle-maximize", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) {
+    return false;
+  }
+  return toggleWindowMaximize(win);
+});
+
+ipcMain.handle("window:close", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) {
+    win.close();
+  }
 });
 
 ipcMain.on("ssh:input", (_event, request: SendDataRequest) => {
