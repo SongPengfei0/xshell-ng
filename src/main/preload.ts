@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ConnectRequest,
   ConnectResponse,
+  KnownHostDeleteRequest,
+  KnownHostListResponse,
   LocalDeleteRequest,
   LocalListRequest,
   LocalMkdirRequest,
@@ -31,6 +33,9 @@ import type {
   TransferProgressEvent,
   SshDataEvent,
   SshStatusEvent,
+  TerminalLogStartRequest,
+  TerminalLogStartResponse,
+  TerminalLogStopRequest,
   WindowStateEvent
 } from "../shared/ipc";
 
@@ -51,6 +56,18 @@ contextBridge.exposeInMainWorld("xshellBridge", {
   resize: (request: ResizeRequest): void => {
     ipcRenderer.send("ssh:resize", request);
   },
+  terminalLogStart: (
+    request: TerminalLogStartRequest
+  ): Promise<TerminalLogStartResponse> =>
+    ipcRenderer.invoke("terminal-log:start", request),
+  terminalLogStop: (request: TerminalLogStopRequest): Promise<void> =>
+    ipcRenderer.invoke("terminal-log:stop", request),
+  knownHostsList: (): Promise<KnownHostListResponse> =>
+    ipcRenderer.invoke("known-hosts:list"),
+  knownHostsDelete: (request: KnownHostDeleteRequest): Promise<void> =>
+    ipcRenderer.invoke("known-hosts:delete", request),
+  knownHostsClear: (): Promise<void> =>
+    ipcRenderer.invoke("known-hosts:clear"),
   clipboardReadText: (): Promise<string> =>
     ipcRenderer.invoke("clipboard:read-text"),
   clipboardWriteText: (text: string): Promise<void> =>

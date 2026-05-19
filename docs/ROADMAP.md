@@ -4,11 +4,8 @@ This roadmap tracks likely work after the initial public repository setup.
 
 ## Near Term
 
-- Persist SSH tunnel configurations on connection profiles.
-- Optionally auto-start selected tunnels after SSH connection.
-- Add terminal logging.
-- Add quick commands or command snippets.
-- Improve overwrite conflict handling for SFTP transfers.
+- Add UI smoke tests for key workflows.
+- Add configurable terminal log directory and log rotation.
 
 ## Later
 
@@ -17,7 +14,7 @@ This roadmap tracks likely work after the initial public repository setup.
 - Remote chmod / permission editing.
 - Login scripts and trigger rules.
 - Split the large renderer state machine into focused modules.
-- Add UI smoke tests for key workflows.
+- Add richer SFTP conflict prompts for per-file decisions.
 
 ## Non-goals
 

@@ -19,6 +19,7 @@ export interface SshProfile {
   privateKeyPath?: string;
   passphrase?: string;
   color?: string;
+  tunnels?: SavedTunnelConfig[];
 }
 
 export interface ConnectRequest {
@@ -83,6 +84,19 @@ export interface TunnelCreateRequest {
   targetPort?: number;
 }
 
+export interface SavedTunnelConfig {
+  id: string;
+  type: TunnelType;
+  name: string;
+  autoStart: boolean;
+  localHost?: string;
+  localPort?: number;
+  remoteHost?: string;
+  remotePort?: number;
+  targetHost?: string;
+  targetPort?: number;
+}
+
 export interface TunnelCreateResponse {
   tunnel: TunnelInfo;
 }
@@ -111,6 +125,39 @@ export interface ResizeRequest {
 export interface SendDataRequest {
   sessionId: string;
   data: string;
+}
+
+export interface TerminalLogStartRequest {
+  sessionId: string;
+  profileName: string;
+  host: string;
+  username: string;
+}
+
+export interface TerminalLogStartResponse {
+  filePath: string;
+}
+
+export interface TerminalLogStopRequest {
+  sessionId: string;
+}
+
+export interface KnownHostEntry {
+  id: string;
+  host: string;
+  port: number;
+  keyAlgorithm: string;
+  fingerprint: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface KnownHostListResponse {
+  entries: KnownHostEntry[];
+}
+
+export interface KnownHostDeleteRequest {
+  id: string;
 }
 
 export interface SecretSetRequest {
@@ -187,6 +234,7 @@ export interface SftpUploadRequest {
   remoteDirectory: string;
   remoteName?: string;
   transferId?: string;
+  conflictPolicy?: SftpConflictPolicy;
 }
 
 export interface SftpDownloadRequest {
@@ -195,6 +243,7 @@ export interface SftpDownloadRequest {
   localDirectory: string;
   localName?: string;
   transferId?: string;
+  conflictPolicy?: SftpConflictPolicy;
 }
 
 export interface SftpMkdirRequest {
@@ -231,6 +280,8 @@ export interface TransferSummary {
 }
 
 export type TransferDirection = "upload" | "download";
+
+export type SftpConflictPolicy = "overwrite" | "skip" | "rename";
 
 export type TransferStatus =
   | "queued"

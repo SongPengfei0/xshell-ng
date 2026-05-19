@@ -2,6 +2,8 @@ import type {
   ConnectRequest,
   ConnectResponse,
   FileListResponse,
+  KnownHostDeleteRequest,
+  KnownHostListResponse,
   LocalDeleteRequest,
   LocalListRequest,
   LocalMkdirRequest,
@@ -31,6 +33,9 @@ import type {
   TransferSummary,
   SshDataEvent,
   SshStatusEvent,
+  TerminalLogStartRequest,
+  TerminalLogStartResponse,
+  TerminalLogStopRequest,
   WindowStateEvent
 } from "../shared/ipc";
 
@@ -41,6 +46,13 @@ declare global {
       disconnect: (sessionId: string) => Promise<void>;
       sendData: (request: SendDataRequest) => void;
       resize: (request: ResizeRequest) => void;
+      terminalLogStart: (
+        request: TerminalLogStartRequest
+      ) => Promise<TerminalLogStartResponse>;
+      terminalLogStop: (request: TerminalLogStopRequest) => Promise<void>;
+      knownHostsList: () => Promise<KnownHostListResponse>;
+      knownHostsDelete: (request: KnownHostDeleteRequest) => Promise<void>;
+      knownHostsClear: () => Promise<void>;
       clipboardReadText: () => Promise<string>;
       clipboardWriteText: (text: string) => Promise<void>;
       secretSet: (request: SecretSetRequest) => Promise<void>;

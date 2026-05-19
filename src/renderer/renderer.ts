@@ -11,6 +11,9 @@ import { createIcons, icons } from "lucide";
 import type {
   AuthMethod,
   FileListEntry,
+  KnownHostEntry,
+  SavedTunnelConfig,
+  SftpConflictPolicy,
   SshProfile,
   TunnelCreateRequest,
   TunnelInfo,
@@ -31,6 +34,8 @@ interface TerminalTab {
   searchAddon: SearchAddon;
   element: HTMLDivElement;
   sessionId?: string;
+  logFilePath?: string;
+  autoStartedSessionId?: string;
   status: "idle" | "connecting" | "connected" | "disconnected" | "error";
 }
 
@@ -42,6 +47,7 @@ interface Preferences {
   fontSize: number;
   theme: ThemeId;
   cursorBlink: boolean;
+  terminalLogging: boolean;
 }
 
 interface AppTheme {
@@ -79,6 +85,7 @@ interface SftpTransferQueueItem {
   remotePath?: string;
   localDirectory?: string;
   localName?: string;
+  conflictPolicy: SftpConflictPolicy;
   status: TransferStatus;
   percent: number;
   message: string;
@@ -90,8 +97,16 @@ interface SftpTransferQueueItem {
   createdAt: number;
 }
 
+interface QuickCommand {
+  id: string;
+  name: string;
+  group?: string;
+  command: string;
+}
+
 const PROFILE_STORAGE_KEY = "xshell-ng.profiles.v1";
 const PREF_STORAGE_KEY = "xshell-ng.preferences.v1";
+const QUICK_COMMAND_STORAGE_KEY = "xshell-ng.quickCommands.v1";
 
 const $ = <T extends HTMLElement>(selector: string) => {
   const element = document.querySelector<T>(selector);
@@ -114,6 +129,7 @@ const elements = {
   reconnectTab: $("#reconnect-tab") as HTMLButtonElement,
   duplicateTab: $("#duplicate-tab") as HTMLButtonElement,
   openTerminalSearch: $("#open-terminal-search") as HTMLButtonElement,
+  openQuickCommands: $("#open-quick-commands") as HTMLButtonElement,
   openSftp: $("#open-sftp") as HTMLButtonElement,
   openTunnels: $("#open-tunnels") as HTMLButtonElement,
   openPreferences: $("#open-preferences") as HTMLButtonElement,
@@ -136,6 +152,8 @@ const elements = {
   statusRight: $("#status-right"),
   connectionDialog: $("#connection-dialog") as HTMLDialogElement,
   preferencesDialog: $("#preferences-dialog") as HTMLDialogElement,
+  quickCommandDialog: $("#quick-command-dialog") as HTMLDialogElement,
+  knownHostDialog: $("#known-host-dialog") as HTMLDialogElement,
   tunnelDialog: $("#tunnel-dialog") as HTMLDialogElement,
   sftpDialog: $("#sftp-dialog") as HTMLDialogElement,
   profileForm: $("#profile-form") as HTMLFormElement,
@@ -156,6 +174,18 @@ const elements = {
   prefFontSize: $("#pref-font-size") as HTMLInputElement,
   prefTheme: $("#pref-theme") as HTMLSelectElement,
   prefCursorBlink: $("#pref-cursor-blink") as HTMLInputElement,
+  prefTerminalLogging: $("#pref-terminal-logging") as HTMLInputElement,
+  quickCommandSummary: $("#quick-command-summary"),
+  quickCommandList: $("#quick-command-list"),
+  quickCommandForm: $("#quick-command-form") as HTMLFormElement,
+  quickCommandName: $("#quick-command-name") as HTMLInputElement,
+  quickCommandGroup: $("#quick-command-group") as HTMLInputElement,
+  quickCommandBody: $("#quick-command-body") as HTMLTextAreaElement,
+  quickCommandDelete: $("#quick-command-delete") as HTMLButtonElement,
+  quickCommandSend: $("#quick-command-send") as HTMLButtonElement,
+  knownHostSummary: $("#known-host-summary"),
+  knownHostList: $("#known-host-list"),
+  knownHostClear: $("#known-host-clear") as HTMLButtonElement,
   tunnelSubtitle: $("#tunnel-subtitle"),
   tunnelForm: $("#tunnel-form") as HTMLFormElement,
   tunnelName: $("#tunnel-name") as HTMLInputElement,
@@ -169,11 +199,16 @@ const elements = {
   tunnelTargetPortRow: $("#tunnel-target-port-row"),
   tunnelTargetHostLabel: $("#tunnel-target-host-label"),
   tunnelTargetPortLabel: $("#tunnel-target-port-label"),
+  tunnelSaveProfile: $("#tunnel-save-profile") as HTMLInputElement,
+  tunnelAutoStart: $("#tunnel-auto-start") as HTMLInputElement,
   tunnelSummary: $("#tunnel-summary"),
   tunnelList: $("#tunnel-list"),
+  savedTunnelSummary: $("#saved-tunnel-summary"),
+  savedTunnelList: $("#saved-tunnel-list"),
   sftpSubtitle: $("#sftp-subtitle"),
   sftpLocalPath: $("#sftp-local-path") as HTMLInputElement,
   sftpRemotePath: $("#sftp-remote-path") as HTMLInputElement,
+  sftpConflictPolicy: $("#sftp-conflict-policy") as HTMLSelectElement,
   sftpLocalList: $("#sftp-local-list"),
   sftpRemoteList: $("#sftp-remote-list"),
   sftpLocalCount: $("#sftp-local-count"),
@@ -197,13 +232,16 @@ let tabs: TerminalTab[] = [];
 let activeTabId: string | undefined;
 let editingProfileId: string | undefined;
 let preferences: Preferences = loadPreferences();
+let quickCommands: QuickCommand[] = loadQuickCommands();
+let activeQuickCommandId: string | undefined;
+let knownHostEntries: KnownHostEntry[] = [];
 let toastTimer: number | undefined;
 let menuCloseTimer: number | undefined;
 let pendingSftpInput: ((value: string | undefined) => void) | undefined;
 let isTerminalSearchOpen = false;
 let activeSftpTransferId: string | undefined;
 let sftpTransferQueue: SftpTransferQueueItem[] = [];
-let tunnelState: { sessionId?: string; tunnels: TunnelInfo[] } = {
+let tunnelState: { sessionId?: string; profileId?: string; tunnels: TunnelInfo[] } = {
   tunnels: []
 };
 let sftpState: SftpState = {
@@ -536,10 +574,114 @@ function createId() {
   return crypto.randomUUID();
 }
 
+function normalizeQuickCommand(value: unknown): QuickCommand | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as Partial<QuickCommand>;
+  const command = typeof candidate.command === "string" ? candidate.command : "";
+  const name =
+    typeof candidate.name === "string" && candidate.name.trim()
+      ? candidate.name.trim()
+      : command.trim().split(/\r?\n/)[0]?.slice(0, 42).trim() || "未命名命令";
+  return {
+    id: typeof candidate.id === "string" && candidate.id ? candidate.id : createId(),
+    name,
+    group:
+      typeof candidate.group === "string" && candidate.group.trim()
+        ? candidate.group.trim()
+        : undefined,
+    command
+  };
+}
+
+function loadQuickCommands() {
+  try {
+    const raw = localStorage.getItem(QUICK_COMMAND_STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed
+          .map(normalizeQuickCommand)
+          .filter((command): command is QuickCommand => Boolean(command))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveQuickCommands() {
+  localStorage.setItem(QUICK_COMMAND_STORAGE_KEY, JSON.stringify(quickCommands));
+}
+
+function isTunnelType(value: unknown): value is TunnelType {
+  return value === "local" || value === "remote" || value === "dynamic";
+}
+
+function defaultTunnelName(type: TunnelType) {
+  return {
+    local: "本地转发",
+    remote: "远端转发",
+    dynamic: "SOCKS5 代理"
+  }[type];
+}
+
+function normalizeSavedTunnel(value: unknown): SavedTunnelConfig | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as Partial<SavedTunnelConfig>;
+  const type = isTunnelType(candidate.type) ? candidate.type : "local";
+  const localPort = Number(candidate.localPort);
+  const remotePort = Number(candidate.remotePort);
+  const targetPort = Number(candidate.targetPort);
+  return {
+    id: typeof candidate.id === "string" && candidate.id ? candidate.id : createId(),
+    type,
+    name:
+      typeof candidate.name === "string" && candidate.name.trim()
+        ? candidate.name.trim()
+        : defaultTunnelName(type),
+    autoStart: Boolean(candidate.autoStart),
+    localHost: typeof candidate.localHost === "string" ? candidate.localHost.trim() : undefined,
+    localPort:
+      Number.isInteger(localPort) && localPort >= 0 && localPort <= 65535
+        ? localPort
+        : undefined,
+    remoteHost:
+      typeof candidate.remoteHost === "string" ? candidate.remoteHost.trim() : undefined,
+    remotePort:
+      Number.isInteger(remotePort) && remotePort >= 0 && remotePort <= 65535
+        ? remotePort
+        : undefined,
+    targetHost:
+      typeof candidate.targetHost === "string" ? candidate.targetHost.trim() : undefined,
+    targetPort:
+      Number.isInteger(targetPort) && targetPort >= 1 && targetPort <= 65535
+        ? targetPort
+        : undefined
+  };
+}
+
+function normalizeProfile(profile: SshProfile): SshProfile {
+  return {
+    ...profile,
+    tunnels: Array.isArray(profile.tunnels)
+      ? profile.tunnels
+          .map(normalizeSavedTunnel)
+          .filter((tunnel): tunnel is SavedTunnelConfig => Boolean(tunnel))
+      : []
+  };
+}
+
 function loadProfiles() {
   try {
     const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as SshProfile[]) : [];
+    return raw ? (JSON.parse(raw) as SshProfile[]).map(normalizeProfile) : [];
   } catch {
     return [];
   }
@@ -574,7 +716,8 @@ function loadPreferences(): Preferences {
       return {
         fontSize: Number(parsed.fontSize || 14),
         theme: isThemeId(parsed.theme) ? parsed.theme : "classic",
-        cursorBlink: parsed.cursorBlink ?? true
+        cursorBlink: parsed.cursorBlink ?? true,
+        terminalLogging: Boolean(parsed.terminalLogging)
       };
     }
   } catch {
@@ -584,7 +727,8 @@ function loadPreferences(): Preferences {
   return {
     fontSize: 14,
     theme: "classic",
-    cursorBlink: true
+    cursorBlink: true,
+    terminalLogging: false
   };
 }
 
@@ -594,7 +738,7 @@ function savePreferences() {
 
 function sanitizeProfile(profile: SshProfile): SshProfile {
   return {
-    ...profile,
+    ...normalizeProfile(profile),
     password: "",
     passphrase: ""
   };
@@ -905,6 +1049,319 @@ function getConnectedActiveTab() {
   return activeTab;
 }
 
+function quickCommandPreview(command: string) {
+  return command.trim().split(/\r?\n/)[0] || "空命令";
+}
+
+function sortedQuickCommands() {
+  return [...quickCommands].sort((left, right) => {
+    const leftGroup = left.group?.trim() || "默认";
+    const rightGroup = right.group?.trim() || "默认";
+    const groupCompare = leftGroup.localeCompare(rightGroup, "zh-CN", {
+      sensitivity: "base",
+      numeric: true
+    });
+    return groupCompare || left.name.localeCompare(right.name, "zh-CN", {
+      sensitivity: "base",
+      numeric: true
+    });
+  });
+}
+
+function fillQuickCommandForm(command?: QuickCommand) {
+  elements.quickCommandName.value = command?.name ?? "";
+  elements.quickCommandGroup.value = command?.group ?? "";
+  elements.quickCommandBody.value = command?.command ?? "";
+  elements.quickCommandDelete.disabled = !command;
+}
+
+function renderQuickCommands() {
+  elements.quickCommandSummary.textContent = `${quickCommands.length} 项命令片段`;
+
+  if (quickCommands.length === 0) {
+    elements.quickCommandList.innerHTML = `
+      <div class="quick-command-empty">
+        <i data-lucide="terminal"></i>
+        <span>暂无命令片段</span>
+      </div>
+    `;
+    elements.quickCommandDelete.disabled = true;
+    refreshIcons();
+    return;
+  }
+
+  const groups = new Map<string, QuickCommand[]>();
+  for (const command of sortedQuickCommands()) {
+    const groupName = command.group?.trim() || "默认";
+    groups.set(groupName, [...(groups.get(groupName) ?? []), command]);
+  }
+
+  elements.quickCommandList.innerHTML = [...groups.entries()]
+    .map(([groupName, commands]) => {
+      const rows = commands
+        .map(
+          (command) => `
+            <button class="quick-command-row ${command.id === activeQuickCommandId ? "active" : ""}" type="button" data-command-id="${escapeHtml(command.id)}">
+              <strong>${escapeHtml(command.name)}</strong>
+              <span>${escapeHtml(quickCommandPreview(command.command))}</span>
+            </button>
+          `
+        )
+        .join("");
+
+      return `
+        <section class="quick-command-group">
+          <div class="quick-command-group-title">
+            <span>${escapeHtml(groupName)}</span>
+            <small>${commands.length}</small>
+          </div>
+          ${rows}
+        </section>
+      `;
+    })
+    .join("");
+  refreshIcons();
+}
+
+function selectQuickCommand(commandId: string) {
+  const command = quickCommands.find((item) => item.id === commandId);
+  if (!command) {
+    return;
+  }
+
+  activeQuickCommandId = command.id;
+  fillQuickCommandForm(command);
+  renderQuickCommands();
+}
+
+function newQuickCommand() {
+  activeQuickCommandId = undefined;
+  fillQuickCommandForm();
+  renderQuickCommands();
+  elements.quickCommandName.focus();
+}
+
+function saveQuickCommandFromForm() {
+  const name = elements.quickCommandName.value.trim();
+  const group = elements.quickCommandGroup.value.trim();
+  const command = elements.quickCommandBody.value.trimEnd();
+
+  if (!name) {
+    showToast("请输入命令名称");
+    elements.quickCommandName.focus();
+    return;
+  }
+  if (!command.trim()) {
+    showToast("请输入命令内容");
+    elements.quickCommandBody.focus();
+    return;
+  }
+
+  const existing = quickCommands.find((item) => item.id === activeQuickCommandId);
+  if (existing) {
+    quickCommands = quickCommands.map((item) =>
+      item.id === existing.id
+        ? {
+            ...item,
+            name,
+            group: group || undefined,
+            command
+          }
+        : item
+    );
+    activeQuickCommandId = existing.id;
+  } else {
+    const saved: QuickCommand = {
+      id: createId(),
+      name,
+      group: group || undefined,
+      command
+    };
+    quickCommands = [...quickCommands, saved];
+    activeQuickCommandId = saved.id;
+  }
+
+  saveQuickCommands();
+  renderQuickCommands();
+  fillQuickCommandForm(quickCommands.find((item) => item.id === activeQuickCommandId));
+  showToast("命令片段已保存");
+}
+
+function deleteActiveQuickCommand() {
+  const existing = quickCommands.find((item) => item.id === activeQuickCommandId);
+  if (!existing) {
+    newQuickCommand();
+    return;
+  }
+  if (!window.confirm(`删除命令片段「${existing.name}」？`)) {
+    return;
+  }
+
+  const remaining = quickCommands.filter((item) => item.id !== existing.id);
+  quickCommands = remaining;
+  activeQuickCommandId = remaining[0]?.id;
+  saveQuickCommands();
+  fillQuickCommandForm(remaining[0]);
+  renderQuickCommands();
+  showToast("命令片段已删除");
+}
+
+function sendQuickCommand() {
+  const rawCommand = elements.quickCommandBody.value;
+  if (!rawCommand.trim()) {
+    showToast("请输入命令内容");
+    elements.quickCommandBody.focus();
+    return;
+  }
+
+  const activeTab = getConnectedActiveTab();
+  if (!activeTab?.sessionId) {
+    showToast("请先连接一个 SSH 会话");
+    return;
+  }
+
+  const data = rawCommand.endsWith("\n") || rawCommand.endsWith("\r")
+    ? rawCommand
+    : `${rawCommand}\r`;
+  window.xshellBridge.sendData({
+    sessionId: activeTab.sessionId,
+    data
+  });
+  activeTab.terminal.focus();
+  showToast("命令已发送");
+}
+
+function openQuickCommands() {
+  if (!activeQuickCommandId && quickCommands.length > 0) {
+    activeQuickCommandId = sortedQuickCommands()[0]?.id;
+  }
+
+  fillQuickCommandForm(quickCommands.find((item) => item.id === activeQuickCommandId));
+  renderQuickCommands();
+  if (!elements.quickCommandDialog.open) {
+    elements.quickCommandDialog.showModal();
+  }
+  if (activeQuickCommandId) {
+    elements.quickCommandBody.focus();
+  } else {
+    elements.quickCommandName.focus();
+  }
+  refreshIcons();
+}
+
+function formatKnownHostDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function renderKnownHosts() {
+  elements.knownHostSummary.textContent = `${knownHostEntries.length} 项已信任主机`;
+  elements.knownHostClear.disabled = knownHostEntries.length === 0;
+
+  if (knownHostEntries.length === 0) {
+    elements.knownHostList.innerHTML = `
+      <div class="known-host-empty">
+        <i data-lucide="key-round"></i>
+        <span>暂无已信任主机</span>
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  elements.knownHostList.innerHTML = knownHostEntries
+    .map(
+      (entry) => `
+        <article class="known-host-row" data-known-host-id="${escapeHtml(entry.id)}">
+          <div class="known-host-icon">
+            <i data-lucide="key-round"></i>
+          </div>
+          <div class="known-host-main">
+            <strong>${escapeHtml(entry.host)}:${entry.port}</strong>
+            <span>${escapeHtml(entry.keyAlgorithm)} · ${escapeHtml(entry.fingerprint)}</span>
+            <small>首次信任 ${formatKnownHostDate(entry.firstSeenAt)} · 最近确认 ${formatKnownHostDate(entry.lastSeenAt)}</small>
+          </div>
+          <button class="icon-button danger" type="button" data-action="delete-known-host" title="删除主机密钥">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </article>
+      `
+    )
+    .join("");
+  refreshIcons();
+}
+
+async function refreshKnownHosts() {
+  elements.knownHostList.innerHTML = `
+    <div class="known-host-empty">
+      <i data-lucide="loader-circle"></i>
+      <span>正在读取主机密钥</span>
+    </div>
+  `;
+  refreshIcons();
+
+  try {
+    const response = await window.xshellBridge.knownHostsList();
+    knownHostEntries = response.entries;
+    renderKnownHosts();
+  } catch (error) {
+    showToast(`读取主机密钥失败：${getErrorMessage(error)}`);
+    renderKnownHosts();
+  }
+}
+
+async function openKnownHosts() {
+  if (!elements.knownHostDialog.open) {
+    elements.knownHostDialog.showModal();
+  }
+  await refreshKnownHosts();
+}
+
+async function deleteKnownHost(id: string) {
+  const entry = knownHostEntries.find((item) => item.id === id);
+  if (!entry) {
+    return;
+  }
+  if (!window.confirm(`删除 ${entry.host}:${entry.port} 的主机密钥记录？`)) {
+    return;
+  }
+
+  try {
+    await window.xshellBridge.knownHostsDelete({ id });
+    await refreshKnownHosts();
+    showToast("主机密钥记录已删除");
+  } catch (error) {
+    showToast(`删除主机密钥失败：${getErrorMessage(error)}`);
+  }
+}
+
+async function clearKnownHosts() {
+  if (knownHostEntries.length === 0) {
+    return;
+  }
+  if (!window.confirm(`清空全部 ${knownHostEntries.length} 项主机密钥记录？`)) {
+    return;
+  }
+
+  try {
+    await window.xshellBridge.knownHostsClear();
+    knownHostEntries = [];
+    renderKnownHosts();
+    showToast("主机密钥记录已清空");
+  } catch (error) {
+    showToast(`清空主机密钥失败：${getErrorMessage(error)}`);
+  }
+}
+
 function isSearchToggleActive(button: HTMLButtonElement) {
   return button.getAttribute("aria-pressed") === "true";
 }
@@ -1118,6 +1575,8 @@ async function connectTab(tab: TerminalTab, profile: SshProfile) {
   tab.profile = profile;
   tab.status = "connecting";
   tab.sessionId = undefined;
+  tab.logFilePath = undefined;
+  tab.autoStartedSessionId = undefined;
   renderTabs();
 
   tab.terminal.writeln(`\x1b[36m连接 ${profile.username}@${profile.host}:${profile.port} ...\x1b[0m`);
@@ -1137,6 +1596,43 @@ async function connectTab(tab: TerminalTab, profile: SshProfile) {
     tab.status = "error";
     tab.terminal.writeln(`\x1b[31m${getErrorMessage(error)}\x1b[0m`);
     renderTabs();
+  }
+}
+
+async function startTerminalLogging(tab: TerminalTab) {
+  if (!preferences.terminalLogging || !tab.sessionId || tab.logFilePath) {
+    return;
+  }
+
+  try {
+    const response = await window.xshellBridge.terminalLogStart({
+      sessionId: tab.sessionId,
+      profileName: tab.profile.name,
+      host: tab.profile.host,
+      username: tab.profile.username
+    });
+    tab.logFilePath = response.filePath;
+    tab.terminal.writeln(`\r\n\x1b[36m终端日志：${response.filePath}\x1b[0m`);
+  } catch (error) {
+    showToast(`开启终端日志失败：${getErrorMessage(error)}`);
+  }
+}
+
+function clearTerminalLogging(tab: TerminalTab) {
+  tab.logFilePath = undefined;
+}
+
+async function stopTerminalLogging(tab: TerminalTab) {
+  if (!tab.sessionId || !tab.logFilePath) {
+    return;
+  }
+
+  try {
+    await window.xshellBridge.terminalLogStop({ sessionId: tab.sessionId });
+  } catch (error) {
+    showToast(`停止终端日志失败：${getErrorMessage(error)}`);
+  } finally {
+    clearTerminalLogging(tab);
   }
 }
 
@@ -1188,6 +1684,9 @@ function readProfileForm(): SshProfile {
   const host = elements.profileHost.value.trim();
   const username = elements.profileUsername.value.trim();
   const fallbackName = host ? `${username || "ssh"}@${host}` : "未命名配置";
+  const existingProfile = editingProfileId
+    ? profiles.find((profile) => profile.id === editingProfileId)
+    : undefined;
 
   return {
     id: editingProfileId ?? createId(),
@@ -1201,7 +1700,8 @@ function readProfileForm(): SshProfile {
     rememberPassword: elements.profileRemember.checked,
     privateKeyPath: elements.profileKeyPath.value.trim(),
     passphrase: elements.profilePassphrase.value,
-    color: profileColor(editingProfileId ?? host)
+    color: existingProfile?.color ?? profileColor(editingProfileId ?? host),
+    tunnels: existingProfile?.tunnels ?? []
   };
 }
 
@@ -1427,6 +1927,7 @@ function openPreferences() {
   elements.prefFontSize.value = String(preferences.fontSize);
   elements.prefTheme.value = preferences.theme;
   elements.prefCursorBlink.checked = preferences.cursorBlink;
+  elements.prefTerminalLogging.checked = preferences.terminalLogging;
   elements.preferencesDialog.showModal();
 }
 
@@ -1540,10 +2041,189 @@ function renderTunnels() {
   refreshIcons();
 }
 
+function getTunnelProfile() {
+  return profiles.find((profile) => profile.id === tunnelState.profileId);
+}
+
+function savedTunnelRoute(tunnel: SavedTunnelConfig) {
+  if (tunnel.type === "dynamic") {
+    return `SOCKS5 ${tunnel.localHost}:${tunnel.localPort}`;
+  }
+  if (tunnel.type === "remote") {
+    return `${tunnel.remoteHost}:${tunnel.remotePort} -> ${tunnel.targetHost}:${tunnel.targetPort}`;
+  }
+  return `${tunnel.localHost}:${tunnel.localPort} -> ${tunnel.targetHost}:${tunnel.targetPort}`;
+}
+
+function renderSavedTunnels() {
+  const profile = getTunnelProfile();
+  const tunnels = profile?.tunnels ?? [];
+  elements.savedTunnelSummary.textContent = `${tunnels.length} 项`;
+
+  if (!profile) {
+    elements.savedTunnelList.innerHTML = `
+      <div class="tunnel-empty">
+        <i data-lucide="save-off"></i>
+        <span>快速连接不会保存隧道</span>
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  if (tunnels.length === 0) {
+    elements.savedTunnelList.innerHTML = `
+      <div class="tunnel-empty">
+        <i data-lucide="bookmark-x"></i>
+        <span>暂无已保存隧道</span>
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  elements.savedTunnelList.innerHTML = tunnels
+    .map(
+      (tunnel) => `
+        <article class="tunnel-row saved" data-saved-tunnel-id="${tunnel.id}">
+          <div class="tunnel-icon">
+            <i data-lucide="${tunnelIconName(tunnel.type)}"></i>
+          </div>
+          <div class="tunnel-main">
+            <div class="tunnel-title">
+              <span>${escapeHtml(tunnel.name)}</span>
+              <span class="tunnel-badge">${tunnelTypeText(tunnel.type)}</span>
+              <span class="tunnel-badge ${tunnel.autoStart ? "" : "manual"}">${tunnel.autoStart ? "自动" : "手动"}</span>
+            </div>
+            <div class="tunnel-route">${escapeHtml(savedTunnelRoute(tunnel))}</div>
+          </div>
+          <div class="tunnel-actions">
+            <button class="tunnel-stop" type="button" data-action="start-saved-tunnel">启动</button>
+            <button class="tunnel-stop" type="button" data-action="toggle-saved-tunnel">${tunnel.autoStart ? "手动" : "自动"}</button>
+            <button class="tunnel-stop danger" type="button" data-action="delete-saved-tunnel">删除</button>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+  refreshIcons();
+}
+
+function updateSavedTunnels(
+  profileId: string,
+  updater: (tunnels: SavedTunnelConfig[]) => SavedTunnelConfig[]
+) {
+  profiles = profiles.map((profile) =>
+    profile.id === profileId
+      ? { ...profile, tunnels: updater(profile.tunnels ?? []) }
+      : profile
+  );
+  tabs = tabs.map((tab) =>
+    tab.profile.id === profileId
+      ? {
+          ...tab,
+          profile: {
+            ...tab.profile,
+            tunnels: profiles.find((profile) => profile.id === profileId)?.tunnels ?? []
+          }
+        }
+      : tab
+  );
+  saveProfiles();
+  renderProfiles();
+  renderSavedTunnels();
+}
+
+function savedTunnelFromRequest(
+  request: TunnelCreateRequest,
+  response: TunnelInfo
+): SavedTunnelConfig {
+  return {
+    id: createId(),
+    type: request.type,
+    name: request.name?.trim() || response.name || tunnelTypeText(request.type),
+    autoStart: elements.tunnelAutoStart.checked,
+    localHost: request.localHost,
+    localPort: request.localPort,
+    remoteHost: request.remoteHost,
+    remotePort: request.remotePort,
+    targetHost: request.targetHost,
+    targetPort: request.targetPort
+  };
+}
+
+function tunnelCreateRequestFromSaved(
+  sessionId: string,
+  tunnel: SavedTunnelConfig
+): TunnelCreateRequest {
+  return {
+    sessionId,
+    type: tunnel.type,
+    name: tunnel.name,
+    localHost: tunnel.localHost,
+    localPort: tunnel.localPort,
+    remoteHost: tunnel.remoteHost,
+    remotePort: tunnel.remotePort,
+    targetHost: tunnel.targetHost,
+    targetPort: tunnel.targetPort
+  };
+}
+
+async function startSavedTunnel(tunnel: SavedTunnelConfig, options: { quiet?: boolean } = {}) {
+  if (!tunnelState.sessionId) {
+    if (!options.quiet) {
+      showToast("当前 SSH 会话不可用");
+    }
+    return;
+  }
+
+  try {
+    const response = await window.xshellBridge.tunnelCreate(
+      tunnelCreateRequestFromSaved(tunnelState.sessionId, tunnel)
+    );
+    if (!options.quiet) {
+      showToast(`隧道已启动：${response.tunnel.name}`);
+    }
+    await refreshTunnels();
+  } catch (error) {
+    const message = `启动隧道失败：${getErrorMessage(error)}`;
+    if (!options.quiet) {
+      showToast(message);
+    }
+    throw error;
+  }
+}
+
+async function autoStartProfileTunnels(tab: TerminalTab) {
+  if (!tab.sessionId || tab.autoStartedSessionId === tab.sessionId) {
+    return;
+  }
+
+  tab.autoStartedSessionId = tab.sessionId;
+  const tunnels = tab.profile.tunnels?.filter((tunnel) => tunnel.autoStart) ?? [];
+  for (const tunnel of tunnels) {
+    try {
+      await window.xshellBridge.tunnelCreate(
+        tunnelCreateRequestFromSaved(tab.sessionId, tunnel)
+      );
+      tab.terminal.writeln(`\r\n\x1b[36m已自动启动隧道：${tunnel.name}\x1b[0m`);
+    } catch (error) {
+      tab.terminal.writeln(
+        `\r\n\x1b[31m自动启动隧道失败：${tunnel.name} · ${getErrorMessage(error)}\x1b[0m`
+      );
+    }
+  }
+
+  if (tunnelState.sessionId === tab.sessionId) {
+    await refreshTunnels();
+  }
+}
+
 async function refreshTunnels() {
   if (!tunnelState.sessionId) {
     tunnelState.tunnels = [];
     renderTunnels();
+    renderSavedTunnels();
     return;
   }
 
@@ -1552,6 +2232,7 @@ async function refreshTunnels() {
       sessionId: tunnelState.sessionId
     });
     renderTunnels();
+    renderSavedTunnels();
   } catch (error) {
     showToast(`刷新隧道失败：${getErrorMessage(error)}`);
   }
@@ -1565,7 +2246,14 @@ async function openTunnelsPanel() {
   }
 
   tunnelState.sessionId = activeTab.sessionId;
+  tunnelState.profileId = profiles.some((profile) => profile.id === activeTab.profile.id)
+    ? activeTab.profile.id
+    : undefined;
   elements.tunnelSubtitle.textContent = `${activeTab.profile.name} · ${activeTab.profile.username}@${activeTab.profile.host}`;
+  const canSaveTunnel = Boolean(tunnelState.profileId);
+  elements.tunnelSaveProfile.checked = canSaveTunnel;
+  elements.tunnelSaveProfile.disabled = !canSaveTunnel;
+  elements.tunnelAutoStart.disabled = !canSaveTunnel;
   syncTunnelForm();
   if (!elements.tunnelDialog.open) {
     elements.tunnelDialog.showModal();
@@ -1615,8 +2303,15 @@ function readTunnelRequest(): TunnelCreateRequest {
 
 async function createTunnelFromForm() {
   try {
-    const response = await window.xshellBridge.tunnelCreate(readTunnelRequest());
-    showToast(`隧道已创建：${response.tunnel.name}`);
+    const request = readTunnelRequest();
+    const response = await window.xshellBridge.tunnelCreate(request);
+    let saved = false;
+    if (elements.tunnelSaveProfile.checked && tunnelState.profileId) {
+      const savedTunnel = savedTunnelFromRequest(request, response.tunnel);
+      updateSavedTunnels(tunnelState.profileId, (tunnels) => [...tunnels, savedTunnel]);
+      saved = true;
+    }
+    showToast(saved ? `隧道已创建并保存：${response.tunnel.name}` : `隧道已创建：${response.tunnel.name}`);
     elements.tunnelName.value = "";
     await refreshTunnels();
   } catch (error) {
@@ -1886,6 +2581,19 @@ function transferDirectionIcon(direction: TransferDirection) {
   return direction === "upload" ? "upload" : "download";
 }
 
+function getSelectedConflictPolicy(): SftpConflictPolicy {
+  const value = elements.sftpConflictPolicy.value;
+  return value === "skip" || value === "rename" ? value : "overwrite";
+}
+
+function conflictPolicyLabel(policy: SftpConflictPolicy) {
+  return {
+    overwrite: "覆盖同名",
+    skip: "跳过同名",
+    rename: "重命名同名"
+  }[policy];
+}
+
 function isCancelableTransfer(status: TransferStatus) {
   return status === "queued" || status === "preparing" || status === "running";
 }
@@ -1954,7 +2662,7 @@ function renderTransferQueue() {
               ${escapeHtml(transferDirectionLabel(item.direction))} · ${escapeHtml(item.name)}
             </span>
             <span class="queue-detail" title="${escapeHtml(`${item.sourcePath} -> ${item.targetPath}`)}">
-              ${escapeHtml(item.message)}
+              ${escapeHtml(`${item.message} · ${conflictPolicyLabel(item.conflictPolicy)}`)}
             </span>
             <div class="queue-progress-track">
               <div class="queue-progress-fill" style="width: ${item.percent}%"></div>
@@ -2064,14 +2772,16 @@ async function processSftpTransferQueue() {
             localPath: next.localPath ?? next.sourcePath,
             remoteDirectory: next.remoteDirectory ?? next.targetPath,
             remoteName: next.remoteName ?? next.name,
-            transferId: next.id
+            transferId: next.id,
+            conflictPolicy: next.conflictPolicy
           })
         : await window.xshellBridge.sftpDownload({
             sessionId: next.sessionId,
             remotePath: next.remotePath ?? next.sourcePath,
             localDirectory: next.localDirectory ?? next.targetPath,
             localName: next.localName ?? next.name,
-            transferId: next.id
+            transferId: next.id,
+            conflictPolicy: next.conflictPolicy
           });
 
     const latest = sftpTransferQueue.find((item) => item.id === next.id);
@@ -2296,6 +3006,7 @@ async function uploadSelectedEntry() {
   }
 
   const transferId = createId();
+  const conflictPolicy = getSelectedConflictPolicy();
   enqueueSftpTransfer({
     id: transferId,
     sessionId: sftpState.sessionId,
@@ -2306,6 +3017,7 @@ async function uploadSelectedEntry() {
     localPath: selected.path,
     remoteDirectory: sftpState.remote.path,
     remoteName: selected.name,
+    conflictPolicy,
     status: "queued",
     percent: 0,
     message: `等待上传 ${selected.name}`,
@@ -2313,7 +3025,7 @@ async function uploadSelectedEntry() {
     total: createTransferSummary(),
     createdAt: Date.now()
   });
-  setSftpStatus(`已加入上传队列：${selected.name}`);
+  setSftpStatus(`已加入上传队列：${selected.name} · ${conflictPolicyLabel(conflictPolicy)}`);
 }
 
 async function downloadSelectedEntry() {
@@ -2323,6 +3035,7 @@ async function downloadSelectedEntry() {
     return;
   }
 
+  const conflictPolicy = getSelectedConflictPolicy();
   for (const selected of selectedItems) {
     const transferId = createId();
     enqueueSftpTransfer({
@@ -2335,6 +3048,7 @@ async function downloadSelectedEntry() {
       remotePath: selected.path,
       localDirectory: sftpState.local.path,
       localName: selected.name,
+      conflictPolicy,
       status: "queued",
       percent: 0,
       message: `等待下载 ${selected.name}`,
@@ -2346,8 +3060,8 @@ async function downloadSelectedEntry() {
 
   setSftpStatus(
     selectedItems.length === 1
-      ? `已加入下载队列：${selectedItems[0].name}`
-      : `已加入下载队列：${selectedItems.length} 个远端项目`
+      ? `已加入下载队列：${selectedItems[0].name} · ${conflictPolicyLabel(conflictPolicy)}`
+      : `已加入下载队列：${selectedItems.length} 个远端项目 · ${conflictPolicyLabel(conflictPolicy)}`
   );
 }
 
@@ -2596,11 +3310,17 @@ function handleCommand(command: string) {
     case "export-profiles":
       void exportProfiles();
       break;
+    case "open-quick-commands":
+      openQuickCommands();
+      break;
     case "open-sftp":
       void openSftpPanel();
       break;
     case "open-tunnels":
       void openTunnelsPanel();
+      break;
+    case "open-known-hosts":
+      void openKnownHosts();
       break;
     case "open-preferences":
       openPreferences();
@@ -2672,11 +3392,47 @@ function wireEvents() {
   elements.reconnectTab.addEventListener("click", () => void reconnectActiveTab());
   elements.duplicateTab.addEventListener("click", duplicateActiveTab);
   elements.openTerminalSearch.addEventListener("click", () => openTerminalSearch());
+  elements.openQuickCommands.addEventListener("click", openQuickCommands);
   elements.openPreferences.addEventListener("click", openPreferences);
   elements.openSftp.addEventListener("click", () => void openSftpPanel());
   elements.openTunnels.addEventListener("click", () => void openTunnelsPanel());
   $("#import-profiles").addEventListener("click", () => void importProfiles());
   $("#export-profiles").addEventListener("click", () => void exportProfiles());
+  $("#close-quick-commands").addEventListener("click", () => elements.quickCommandDialog.close());
+  $("#quick-command-new").addEventListener("click", newQuickCommand);
+  elements.quickCommandForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveQuickCommandFromForm();
+  });
+  elements.quickCommandDelete.addEventListener("click", deleteActiveQuickCommand);
+  elements.quickCommandSend.addEventListener("click", sendQuickCommand);
+  elements.quickCommandBody.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.key === "Enter") {
+      event.preventDefault();
+      sendQuickCommand();
+    }
+  });
+  elements.quickCommandList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".quick-command-row");
+    if (!row?.dataset.commandId) {
+      return;
+    }
+    selectQuickCommand(row.dataset.commandId);
+  });
+  $("#close-known-hosts").addEventListener("click", () => elements.knownHostDialog.close());
+  $("#known-host-close-footer").addEventListener("click", () => elements.knownHostDialog.close());
+  $("#known-host-refresh").addEventListener("click", () => void refreshKnownHosts());
+  elements.knownHostClear.addEventListener("click", () => void clearKnownHosts());
+  elements.knownHostList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".known-host-row");
+    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+    if (!row?.dataset.knownHostId || action !== "delete-known-host") {
+      return;
+    }
+    void deleteKnownHost(row.dataset.knownHostId);
+  });
   $("#close-tunnels").addEventListener("click", () => elements.tunnelDialog.close());
   $("#tunnels-close-footer").addEventListener("click", () => elements.tunnelDialog.close());
   $("#refresh-tunnels").addEventListener("click", () => void refreshTunnels());
@@ -2684,6 +3440,9 @@ function wireEvents() {
     const target = event.target as HTMLElement;
     if (target.matches('input[name="tunnel-type"]')) {
       syncTunnelForm();
+    }
+    if (target === elements.tunnelSaveProfile) {
+      elements.tunnelAutoStart.disabled = !elements.tunnelSaveProfile.checked;
     }
   });
   elements.tunnelForm.addEventListener("submit", (event) => {
@@ -2698,6 +3457,42 @@ function wireEvents() {
       return;
     }
     void stopTunnel(row.dataset.tunnelId ?? "");
+  });
+  elements.savedTunnelList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".tunnel-row");
+    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+    const profileId = tunnelState.profileId;
+    if (!row || !action || !profileId) {
+      return;
+    }
+
+    const tunnel = getTunnelProfile()?.tunnels?.find(
+      (item) => item.id === row.dataset.savedTunnelId
+    );
+    if (!tunnel) {
+      return;
+    }
+
+    if (action === "start-saved-tunnel") {
+      void startSavedTunnel(tunnel);
+      return;
+    }
+
+    if (action === "toggle-saved-tunnel") {
+      updateSavedTunnels(profileId, (tunnels) =>
+        tunnels.map((item) =>
+          item.id === tunnel.id ? { ...item, autoStart: !item.autoStart } : item
+        )
+      );
+      return;
+    }
+
+    if (action === "delete-saved-tunnel") {
+      updateSavedTunnels(profileId, (tunnels) =>
+        tunnels.filter((item) => item.id !== tunnel.id)
+      );
+    }
   });
   $("#close-sftp").addEventListener("click", () => elements.sftpDialog.close());
   $("#sftp-close-footer").addEventListener("click", () => elements.sftpDialog.close());
@@ -2972,13 +3767,23 @@ function wireEvents() {
   });
 
   elements.preferencesDialog.addEventListener("close", () => {
+    const wasLogging = preferences.terminalLogging;
     preferences = {
       fontSize: Number(elements.prefFontSize.value || 14),
       theme: isThemeId(elements.prefTheme.value) ? elements.prefTheme.value : "classic",
-      cursorBlink: elements.prefCursorBlink.checked
+      cursorBlink: elements.prefCursorBlink.checked,
+      terminalLogging: elements.prefTerminalLogging.checked
     };
     savePreferences();
     applyPreferences();
+    if (!wasLogging && preferences.terminalLogging) {
+      tabs
+        .filter((tab) => tab.status === "connected")
+        .forEach((tab) => void startTerminalLogging(tab));
+    }
+    if (wasLogging && !preferences.terminalLogging) {
+      tabs.forEach((tab) => void stopTerminalLogging(tab));
+    }
   });
 
   window.addEventListener("resize", fitActiveTerminal);
@@ -3031,19 +3836,26 @@ function wireEvents() {
     tab.status = status;
     if (status === "connected") {
       tab.terminal.writeln(`\x1b[32m${message}\x1b[0m`);
+      void startTerminalLogging(tab);
+      void autoStartProfileTunnels(tab);
     }
     if (status === "error") {
+      clearTerminalLogging(tab);
       tab.sessionId = undefined;
       tab.terminal.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
       showToast(message);
     }
     if (status === "disconnected") {
+      clearTerminalLogging(tab);
       tab.sessionId = undefined;
       tab.terminal.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
     }
     if (status !== "connected" && tunnelState.sessionId === sessionId) {
       tunnelState.tunnels = [];
+      tunnelState.sessionId = undefined;
+      tunnelState.profileId = undefined;
       renderTunnels();
+      renderSavedTunnels();
     }
     renderTabs();
   });

@@ -28,6 +28,9 @@ import type {
   FileEntryKind,
   FileListEntry,
   FileListResponse,
+  KnownHostDeleteRequest,
+  KnownHostEntry,
+  KnownHostListResponse,
   LocalDeleteRequest,
   LocalListRequest,
   LocalMkdirRequest,
@@ -43,10 +46,15 @@ import type {
   SftpCancelTransferRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
+  SftpConflictPolicy,
   SftpListRequest,
   SftpMkdirRequest,
   SftpRenameRequest,
   SftpUploadRequest,
+  SavedTunnelConfig,
+  TerminalLogStartRequest,
+  TerminalLogStartResponse,
+  TerminalLogStopRequest,
   TunnelCloseRequest,
   TunnelCreateRequest,
   TunnelCreateResponse,
@@ -76,6 +84,7 @@ interface TunnelRuntime extends TunnelInfo {
 
 const sessions = new Map<string, SshRuntime>();
 const activeTransfers = new Map<string, TransferContext>();
+const terminalLogs = new Map<string, fs.WriteStream>();
 
 const isDevelopment = !app.isPackaged;
 const secretStoreFileName = "secure-secrets.json";
@@ -655,6 +664,57 @@ const getSecretStorePath = () =>
 const getKnownHostsPath = () =>
   path.join(app.getPath("userData"), knownHostsFileName);
 
+const sanitizeFileName = (value: string) => {
+  const safeName = value
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]+/g, "_")
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+  return safeName || "session";
+};
+
+const timestampForFileName = () =>
+  new Date().toISOString().replace(/[:.]/g, "-");
+
+const terminalLogDirectory = () =>
+  path.join(app.getPath("documents"), "XShell NG Logs");
+
+const appendTerminalLog = (sessionId: string, data: string) => {
+  const stream = terminalLogs.get(sessionId);
+  if (!stream || stream.destroyed) {
+    return;
+  }
+  stream.write(data);
+};
+
+const stopTerminalLog = (sessionId: string) => {
+  const stream = terminalLogs.get(sessionId);
+  if (!stream) {
+    return;
+  }
+  terminalLogs.delete(sessionId);
+  stream.end();
+};
+
+const startTerminalLog = async (
+  request: TerminalLogStartRequest
+): Promise<TerminalLogStartResponse> => {
+  stopTerminalLog(request.sessionId);
+
+  const directory = terminalLogDirectory();
+  await fs.promises.mkdir(directory, { recursive: true });
+  const label = sanitizeFileName(
+    `${request.profileName || request.username}@${request.host}`
+  );
+  const filePath = path.join(directory, `${timestampForFileName()}_${label}.log`);
+  const stream = fs.createWriteStream(filePath, { flags: "a", encoding: "utf8" });
+  terminalLogs.set(request.sessionId, stream);
+  stream.write(
+    `XShell NG terminal log\nSession: ${request.username}@${request.host}\nStarted: ${new Date().toISOString()}\n\n`
+  );
+  return { filePath };
+};
+
 const readSecretStore = async () => {
   try {
     const raw = await fs.promises.readFile(getSecretStorePath(), "utf8");
@@ -827,12 +887,71 @@ const verifyAndStoreHostKey = async (
   return true;
 };
 
+const listKnownHostEntries = async (): Promise<KnownHostEntry[]> => {
+  const store = await readKnownHosts();
+  return Object.entries(store)
+    .map(([id, record]) => ({
+      id,
+      host: record.host,
+      port: record.port,
+      keyAlgorithm: record.keyAlgorithm,
+      fingerprint: record.fingerprint,
+      firstSeenAt: record.firstSeenAt,
+      lastSeenAt: record.lastSeenAt
+    }))
+    .sort((left, right) =>
+      `${left.host}:${left.port}`.localeCompare(`${right.host}:${right.port}`, "zh-CN", {
+        sensitivity: "base",
+        numeric: true
+      })
+    );
+};
+
 const sanitizeProfileForExport = (profile: ProfileExportRequest["profiles"][number]) => ({
   ...profile,
   password: "",
   passphrase: "",
   rememberPassword: false
 });
+
+const coerceSavedTunnel = (value: unknown): SavedTunnelConfig | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as Partial<SavedTunnelConfig>;
+  const type =
+    candidate.type === "remote" || candidate.type === "dynamic" ? candidate.type : "local";
+  const localPort = Number(candidate.localPort);
+  const remotePort = Number(candidate.remotePort);
+  const targetPort = Number(candidate.targetPort);
+  return {
+    id: typeof candidate.id === "string" && candidate.id ? candidate.id : randomUUID(),
+    type,
+    name:
+      typeof candidate.name === "string" && candidate.name.trim()
+        ? candidate.name.trim()
+        : tunnelTypeLabel(type),
+    autoStart: Boolean(candidate.autoStart),
+    localHost: typeof candidate.localHost === "string" ? candidate.localHost.trim() : undefined,
+    localPort:
+      Number.isInteger(localPort) && localPort >= 0 && localPort <= 65535
+        ? localPort
+        : undefined,
+    remoteHost:
+      typeof candidate.remoteHost === "string" ? candidate.remoteHost.trim() : undefined,
+    remotePort:
+      Number.isInteger(remotePort) && remotePort >= 0 && remotePort <= 65535
+        ? remotePort
+        : undefined,
+    targetHost:
+      typeof candidate.targetHost === "string" ? candidate.targetHost.trim() : undefined,
+    targetPort:
+      Number.isInteger(targetPort) && targetPort >= 1 && targetPort <= 65535
+        ? targetPort
+        : undefined
+  };
+};
 
 const coerceImportedProfile = (value: unknown): ProfileExportRequest["profiles"][number] | undefined => {
   if (!value || typeof value !== "object") {
@@ -861,7 +980,12 @@ const coerceImportedProfile = (value: unknown): ProfileExportRequest["profiles"]
     rememberPassword: false,
     privateKeyPath: String(candidate.privateKeyPath ?? "").trim(),
     passphrase: "",
-    color: typeof candidate.color === "string" ? candidate.color : undefined
+    color: typeof candidate.color === "string" ? candidate.color : undefined,
+    tunnels: Array.isArray(candidate.tunnels)
+      ? candidate.tunnels
+          .map(coerceSavedTunnel)
+          .filter((tunnel): tunnel is SavedTunnelConfig => Boolean(tunnel))
+      : undefined
   };
 };
 
@@ -954,6 +1078,7 @@ const createWindow = () => {
   win.on("closed", () => {
     for (const runtime of sessions.values()) {
       if (runtime.window === win) {
+        stopTerminalLog(runtime.id);
         runtime.sftp?.end();
         runtime.stream?.destroy();
         runtime.client.end();
@@ -1112,6 +1237,10 @@ const buildMenu = () => {
       label: "工具",
       submenu: [
         {
+          label: "快速命令",
+          click: () => sendCommandToFocusedWindow("open-quick-commands")
+        },
+        {
           label: "SFTP 文件传输",
           click: () => sendCommandToFocusedWindow("open-sftp")
         },
@@ -1119,6 +1248,11 @@ const buildMenu = () => {
           label: "SSH 隧道",
           click: () => sendCommandToFocusedWindow("open-tunnels")
         },
+        {
+          label: "主机密钥",
+          click: () => sendCommandToFocusedWindow("open-known-hosts")
+        },
+        { type: "separator" },
         {
           label: "设置",
           click: () => sendCommandToFocusedWindow("open-preferences")
@@ -1687,13 +1821,150 @@ const scanRemoteEntry = async (
   return summary;
 };
 
+const normalizeConflictPolicy = (
+  policy: SftpConflictPolicy | undefined
+): SftpConflictPolicy => policy ?? "overwrite";
+
+const splitNameExtension = (name: string) => {
+  const extension = path.extname(name);
+  const base = extension ? name.slice(0, -extension.length) : name;
+  return { base: base || name, extension };
+};
+
+const uniqueLocalPath = async (directoryPath: string, name: string) => {
+  const safeName = assertSafeName(name);
+  const { base, extension } = splitNameExtension(safeName);
+  for (let index = 1; index < 10000; index += 1) {
+    const candidateName = index === 1 ? safeName : `${base} (${index})${extension}`;
+    const candidatePath = path.join(directoryPath, candidateName);
+    try {
+      await fs.promises.lstat(candidatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { path: candidatePath, name: candidateName };
+      }
+      throw error;
+    }
+  }
+  throw new Error(`无法生成不冲突的本地名称：${safeName}`);
+};
+
+const uniqueRemotePath = async (
+  sftp: SFTPWrapper,
+  remoteDirectory: string,
+  name: string
+) => {
+  const safeName = assertSafeName(name);
+  const parsed = path.posix.parse(safeName);
+  const base = parsed.name || safeName;
+  const extension = parsed.ext;
+  for (let index = 1; index < 10000; index += 1) {
+    const candidateName = index === 1 ? safeName : `${base} (${index})${extension}`;
+    const candidatePath = joinRemotePath(remoteDirectory, candidateName);
+    const existing = await trySftpLstat(sftp, candidatePath);
+    if (!existing) {
+      return { path: candidatePath, name: candidateName };
+    }
+  }
+  throw new Error(`无法生成不冲突的远端名称：${safeName}`);
+};
+
+const resolveRemoteTarget = async (
+  sftp: SFTPWrapper,
+  remoteDirectory: string,
+  targetName: string,
+  kind: "file" | "directory",
+  policy: SftpConflictPolicy,
+  summary: TransferSummary,
+  context?: TransferContext
+) => {
+  const remotePath = joinRemotePath(remoteDirectory, targetName);
+  const existing = await trySftpLstat(sftp, remotePath);
+  if (!existing) {
+    return { path: remotePath, name: targetName, skipped: false };
+  }
+
+  if (policy === "skip") {
+    summary.skipped += 1;
+    context &&
+      emitTransferProgress(context, "running", `跳过已存在的远端项目 ${targetName}`, {
+        force: true
+      });
+    return { path: remotePath, name: targetName, skipped: true };
+  }
+
+  if (policy === "rename") {
+    const unique = await uniqueRemotePath(sftp, remoteDirectory, targetName);
+    context &&
+      emitTransferProgress(context, "running", `已重命名远端目标为 ${unique.name}`, {
+        force: true
+      });
+    return { path: unique.path, name: unique.name, skipped: false };
+  }
+
+  const existingKind = existing.isDirectory() && !existing.isSymbolicLink() ? "directory" : "file";
+  if (existingKind !== kind) {
+    throw new Error(`远端已存在不同类型项目：${remotePath}`);
+  }
+  return { path: remotePath, name: targetName, skipped: false };
+};
+
+const resolveLocalTarget = async (
+  localDirectory: string,
+  targetName: string,
+  kind: "file" | "directory",
+  policy: SftpConflictPolicy,
+  summary: TransferSummary,
+  context?: TransferContext
+) => {
+  const safeName = assertSafeName(targetName);
+  const localPath = path.join(localDirectory, safeName);
+  let existing: fs.Stats | undefined;
+  try {
+    existing = await fs.promises.lstat(localPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  if (!existing) {
+    return { path: localPath, name: safeName, skipped: false };
+  }
+
+  if (policy === "skip") {
+    summary.skipped += 1;
+    context &&
+      emitTransferProgress(context, "running", `跳过已存在的本地项目 ${safeName}`, {
+        force: true
+      });
+    return { path: localPath, name: safeName, skipped: true };
+  }
+
+  if (policy === "rename") {
+    const unique = await uniqueLocalPath(localDirectory, safeName);
+    context &&
+      emitTransferProgress(context, "running", `已重命名本地目标为 ${unique.name}`, {
+        force: true
+      });
+    return { path: unique.path, name: unique.name, skipped: false };
+  }
+
+  const existingKind = existing.isDirectory() ? "directory" : "file";
+  if (existingKind !== kind) {
+    throw new Error(`本地已存在不同类型项目：${localPath}`);
+  }
+  return { path: localPath, name: safeName, skipped: false };
+};
+
 const uploadLocalEntry = async (
   sftp: SFTPWrapper,
   localPath: string,
   remoteDirectory: string,
   remoteName: string | undefined,
   summary: TransferSummary,
-  context?: TransferContext
+  context?: TransferContext,
+  conflictPolicy: SftpConflictPolicy = "overwrite"
 ) => {
   assertTransferNotCanceled(context);
   const stats = await fs.promises.lstat(localPath);
@@ -1709,14 +1980,26 @@ const uploadLocalEntry = async (
 
   if (stats.isFile()) {
     await ensureRemoteDirectory(sftp, remoteDirectory);
+    const target = await resolveRemoteTarget(
+      sftp,
+      remoteDirectory,
+      targetName,
+      "file",
+      conflictPolicy,
+      summary,
+      context
+    );
+    if (target.skipped) {
+      return;
+    }
     context && (context.activeFileBytes = stats.size);
     context && (context.activeFileTransferred = 0);
     context &&
-      emitTransferProgress(context, "running", `正在上传 ${targetName}`, {
+      emitTransferProgress(context, "running", `正在上传 ${target.name}`, {
         force: true,
         currentPath: localPath
       });
-    const remotePath = joinRemotePath(remoteDirectory, targetName);
+    const remotePath = target.path;
     try {
       if (context) {
         assertTransferNotCanceled(context);
@@ -1730,7 +2013,7 @@ const uploadLocalEntry = async (
           (transferred, fileSize) => {
             context.activeFileBytes = fileSize;
             context.activeFileTransferred = transferred;
-            emitTransferProgress(context, "running", `正在上传 ${targetName}`);
+            emitTransferProgress(context, "running", `正在上传 ${target.name}`);
           }
         );
       }
@@ -1745,18 +2028,31 @@ const uploadLocalEntry = async (
     context && (context.activeFileBytes = undefined);
     context && (context.activeFileTransferred = undefined);
     context &&
-      emitTransferProgress(context, "running", `已上传 ${targetName}`, {
+      emitTransferProgress(context, "running", `已上传 ${target.name}`, {
         force: true,
         currentPath: localPath
       });
     return;
   }
 
-  const targetDirectory = joinRemotePath(remoteDirectory, targetName);
+  await ensureRemoteDirectory(sftp, remoteDirectory);
+  const target = await resolveRemoteTarget(
+    sftp,
+    remoteDirectory,
+    targetName,
+    "directory",
+    conflictPolicy,
+    summary,
+    context
+  );
+  if (target.skipped) {
+    return;
+  }
+  const targetDirectory = target.path;
   await ensureRemoteDirectory(sftp, targetDirectory);
   summary.directories += 1;
   context &&
-    emitTransferProgress(context, "running", `已创建目录 ${targetName}`, {
+    emitTransferProgress(context, "running", `已准备目录 ${target.name}`, {
       currentPath: localPath
     });
 
@@ -1768,7 +2064,8 @@ const uploadLocalEntry = async (
       targetDirectory,
       entry,
       summary,
-      context
+      context,
+      conflictPolicy
     );
   }
 };
@@ -1779,7 +2076,8 @@ const downloadRemoteEntry = async (
   localDirectory: string,
   localName: string | undefined,
   summary: TransferSummary,
-  context?: TransferContext
+  context?: TransferContext,
+  conflictPolicy: SftpConflictPolicy = "overwrite"
 ) => {
   assertTransferNotCanceled(context);
   const stats = await sftpLstat(sftp, remotePath);
@@ -1795,14 +2093,25 @@ const downloadRemoteEntry = async (
 
   if (stats.isFile()) {
     await fs.promises.mkdir(localDirectory, { recursive: true });
+    const target = await resolveLocalTarget(
+      localDirectory,
+      targetName,
+      "file",
+      conflictPolicy,
+      summary,
+      context
+    );
+    if (target.skipped) {
+      return;
+    }
     context && (context.activeFileBytes = stats.size);
     context && (context.activeFileTransferred = 0);
     context &&
-      emitTransferProgress(context, "running", `正在下载 ${targetName}`, {
+      emitTransferProgress(context, "running", `正在下载 ${target.name}`, {
         force: true,
         currentPath: remotePath
       });
-    const localPath = path.join(localDirectory, targetName);
+    const localPath = target.path;
     try {
       if (context) {
         assertTransferNotCanceled(context);
@@ -1816,7 +2125,7 @@ const downloadRemoteEntry = async (
           (transferred, fileSize) => {
             context.activeFileBytes = fileSize;
             context.activeFileTransferred = transferred;
-            emitTransferProgress(context, "running", `正在下载 ${targetName}`);
+            emitTransferProgress(context, "running", `正在下载 ${target.name}`);
           }
         );
       }
@@ -1831,18 +2140,29 @@ const downloadRemoteEntry = async (
     context && (context.activeFileBytes = undefined);
     context && (context.activeFileTransferred = undefined);
     context &&
-      emitTransferProgress(context, "running", `已下载 ${targetName}`, {
+      emitTransferProgress(context, "running", `已下载 ${target.name}`, {
         force: true,
         currentPath: remotePath
       });
     return;
   }
 
-  const targetDirectory = path.join(localDirectory, targetName);
+  const target = await resolveLocalTarget(
+    localDirectory,
+    targetName,
+    "directory",
+    conflictPolicy,
+    summary,
+    context
+  );
+  if (target.skipped) {
+    return;
+  }
+  const targetDirectory = target.path;
   await fs.promises.mkdir(targetDirectory, { recursive: true });
   summary.directories += 1;
   context &&
-    emitTransferProgress(context, "running", `已创建目录 ${targetName}`, {
+    emitTransferProgress(context, "running", `已准备目录 ${target.name}`, {
       currentPath: remotePath
     });
 
@@ -1857,7 +2177,8 @@ const downloadRemoteEntry = async (
       targetDirectory,
       entry.filename,
       summary,
-      context
+      context,
+      conflictPolicy
     );
   }
 };
@@ -1903,6 +2224,7 @@ ipcMain.handle(
           sendStatus(runtime, "connected", "已连接");
 
           stream.on("data", (data: Buffer) => {
+            appendTerminalLog(id, data.toString("utf8"));
             if (!win.isDestroyed()) {
               win.webContents.send("ssh:data", {
                 sessionId: id,
@@ -1912,6 +2234,7 @@ ipcMain.handle(
           });
 
           stream.stderr.on("data", (data: Buffer) => {
+            appendTerminalLog(id, data.toString("utf8"));
             if (!win.isDestroyed()) {
               win.webContents.send("ssh:data", {
                 sessionId: id,
@@ -1922,6 +2245,7 @@ ipcMain.handle(
 
           stream.on("close", () => {
             void closeAllTunnels(runtime);
+            stopTerminalLog(id);
             sendStatus(runtime, "disconnected", "连接已关闭");
             sessions.delete(id);
           });
@@ -1931,12 +2255,14 @@ ipcMain.handle(
 
     client.on("error", (error) => {
       void closeAllTunnels(runtime);
+      stopTerminalLog(id);
       sendStatus(runtime, "error", error.message);
       sessions.delete(id);
     });
 
     client.on("close", () => {
       void closeAllTunnels(runtime);
+      stopTerminalLog(id);
       sendStatus(runtime, "disconnected", "SSH 会话已断开");
       sessions.delete(id);
     });
@@ -1955,6 +2281,7 @@ ipcMain.handle("ssh:disconnect", async (_event, sessionId: string) => {
   }
 
   await closeAllTunnels(runtime, { unforwardRemote: true });
+  stopTerminalLog(sessionId);
   runtime.sftp?.end();
   runtime.stream?.end();
   runtime.client.end();
@@ -2028,6 +2355,40 @@ ipcMain.on("ssh:input", (_event, request: SendDataRequest) => {
 ipcMain.on("ssh:resize", (_event, request: ResizeRequest) => {
   const stream = sessions.get(request.sessionId)?.stream;
   stream?.setWindow(request.rows, request.cols, 0, 0);
+});
+
+ipcMain.handle(
+  "terminal-log:start",
+  async (_event, request: TerminalLogStartRequest): Promise<TerminalLogStartResponse> => {
+    getRuntime(request.sessionId);
+    return startTerminalLog(request);
+  }
+);
+
+ipcMain.handle("terminal-log:stop", async (_event, request: TerminalLogStopRequest) => {
+  stopTerminalLog(request.sessionId);
+});
+
+ipcMain.handle(
+  "known-hosts:list",
+  async (): Promise<KnownHostListResponse> => ({
+    entries: await listKnownHostEntries()
+  })
+);
+
+ipcMain.handle("known-hosts:delete", async (_event, request: KnownHostDeleteRequest) => {
+  const id = request.id.trim();
+  if (!id) {
+    throw new Error("主机密钥记录无效。");
+  }
+
+  const store = await readKnownHosts();
+  delete store[id];
+  await writeKnownHosts(store);
+});
+
+ipcMain.handle("known-hosts:clear", async () => {
+  await writeKnownHosts({});
 });
 
 ipcMain.handle("clipboard:read-text", async () => clipboard.readText());
@@ -2229,6 +2590,7 @@ ipcMain.handle("sftp:upload", async (event, request: SftpUploadRequest) => {
 
   try {
     const sftp = await getSftp(request.sessionId);
+    const conflictPolicy = normalizeConflictPolicy(request.conflictPolicy);
     assertTransferNotCanceled(context);
     context.total = await scanLocalEntry(request.localPath, createTransferSummary(), context);
     emitTransferProgress(context, "preparing", "上传准备完成", {
@@ -2241,7 +2603,8 @@ ipcMain.handle("sftp:upload", async (event, request: SftpUploadRequest) => {
       request.remoteDirectory,
       request.remoteName || path.basename(request.localPath),
       summary,
-      context
+      context,
+      conflictPolicy
     );
     emitTransferProgress(context, "completed", "上传完成", { force: true });
     return summary;
@@ -2288,6 +2651,7 @@ ipcMain.handle("sftp:download", async (event, request: SftpDownloadRequest) => {
     }
 
     const sftp = await getSftp(request.sessionId);
+    const conflictPolicy = normalizeConflictPolicy(request.conflictPolicy);
     assertTransferNotCanceled(context);
     context.total = await scanRemoteEntry(sftp, request.remotePath, createTransferSummary(), context);
     emitTransferProgress(context, "preparing", "下载准备完成", {
@@ -2300,7 +2664,8 @@ ipcMain.handle("sftp:download", async (event, request: SftpDownloadRequest) => {
       request.localDirectory,
       remoteName,
       summary,
-      context
+      context,
+      conflictPolicy
     );
     emitTransferProgress(context, "completed", "下载完成", { force: true });
     return summary;

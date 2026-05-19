@@ -64,8 +64,11 @@
           <div class="fullscreen-menu-group">
             <button class="fullscreen-menu-trigger" type="button">工具</button>
             <div class="fullscreen-menu-popover">
+              <button type="button" data-command="open-quick-commands">快速命令</button>
               <button type="button" data-command="open-sftp">SFTP 文件传输</button>
               <button type="button" data-command="open-tunnels">SSH 隧道</button>
+              <button type="button" data-command="open-known-hosts">主机密钥</button>
+              <span class="menu-divider"></span>
               <button type="button" data-command="open-preferences">设置</button>
             </div>
           </div>
@@ -119,6 +122,10 @@
         <button id="open-terminal-search" class="tool-button" type="button" title="查找终端输出">
           <i data-lucide="search"></i>
           <span>查找</span>
+        </button>
+        <button id="open-quick-commands" class="tool-button" type="button" title="快速命令 / 命令片段">
+          <i data-lucide="terminal"></i>
+          <span>命令</span>
         </button>
         <button id="open-sftp" class="tool-button" type="button" title="SFTP 文件传输">
           <i data-lucide="folder-sync"></i>
@@ -333,11 +340,91 @@
             <input id="pref-cursor-blink" type="checkbox" />
             <span>光标闪烁</span>
           </label>
+          <label class="inline-check">
+            <input id="pref-terminal-logging" type="checkbox" />
+            <span>自动记录终端日志</span>
+          </label>
         </div>
         <footer class="modal-actions right">
           <button id="save-preferences" class="action-button primary" value="default" type="submit">应用</button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="quick-command-dialog" class="modal quick-command-modal">
+      <section class="modal-card quick-command-card">
+        <header class="modal-head">
+          <div>
+            <strong>快速命令</strong>
+            <span id="quick-command-summary">0 项命令片段</span>
+          </div>
+          <button id="close-quick-commands" class="icon-button" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="quick-command-layout">
+          <section class="quick-command-list-panel" aria-label="快速命令列表">
+            <header>
+              <strong>命令片段</strong>
+              <button id="quick-command-new" class="icon-button" type="button" title="新建命令片段">
+                <i data-lucide="plus"></i>
+              </button>
+            </header>
+            <div id="quick-command-list" class="quick-command-list"></div>
+          </section>
+
+          <form id="quick-command-form" class="quick-command-form">
+            <div class="form-grid quick-command-grid">
+              <label>
+                <span>名称</span>
+                <input id="quick-command-name" autocomplete="off" />
+              </label>
+              <label>
+                <span>分组</span>
+                <input id="quick-command-group" autocomplete="off" placeholder="默认" />
+              </label>
+              <label class="wide">
+                <span>命令内容</span>
+                <textarea id="quick-command-body" rows="8" spellcheck="false"></textarea>
+              </label>
+            </div>
+            <footer class="modal-actions quick-command-actions">
+              <button id="quick-command-delete" class="action-button danger" type="button">删除</button>
+              <div>
+                <button id="quick-command-send" class="action-button" type="button">发送到当前会话</button>
+                <button class="action-button primary" type="submit">保存</button>
+              </div>
+            </footer>
+          </form>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog id="known-host-dialog" class="modal known-host-modal">
+      <section class="modal-card known-host-card">
+        <header class="modal-head">
+          <div>
+            <strong>主机密钥</strong>
+            <span id="known-host-summary">0 项已信任主机</span>
+          </div>
+          <button id="close-known-hosts" class="icon-button" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="known-host-toolbar">
+          <span>已信任记录</span>
+          <div>
+            <button id="known-host-refresh" class="action-button" type="button">刷新</button>
+            <button id="known-host-clear" class="action-button danger" type="button">清空</button>
+          </div>
+        </div>
+        <div id="known-host-list" class="known-host-list"></div>
+        <footer class="modal-actions right">
+          <button id="known-host-close-footer" class="action-button" type="button">关闭</button>
+        </footer>
+      </section>
     </dialog>
 
     <dialog id="tunnel-dialog" class="modal tunnel-modal">
@@ -396,6 +483,16 @@
             </div>
 
             <footer class="modal-actions right tunnel-form-actions">
+              <div class="tunnel-save-options">
+                <label class="inline-check">
+                  <input id="tunnel-save-profile" type="checkbox" checked />
+                  <span>保存到连接配置</span>
+                </label>
+                <label class="inline-check">
+                  <input id="tunnel-auto-start" type="checkbox" checked />
+                  <span>连接后自动启动</span>
+                </label>
+              </div>
               <button class="action-button primary" type="submit">新增隧道</button>
             </footer>
           </form>
@@ -416,6 +513,13 @@
                 <span>暂无隧道</span>
               </div>
             </div>
+            <div class="saved-tunnel-head">
+              <div>
+                <strong>已保存隧道</strong>
+                <span id="saved-tunnel-summary">0 项</span>
+              </div>
+            </div>
+            <div id="saved-tunnel-list" class="tunnel-list saved-tunnel-list"></div>
           </section>
         </div>
 
@@ -477,6 +581,14 @@
           </section>
 
           <div class="transfer-rail" aria-label="传输操作">
+            <label class="transfer-policy">
+              <span>同名策略</span>
+              <select id="sftp-conflict-policy">
+                <option value="overwrite">覆盖</option>
+                <option value="skip">跳过</option>
+                <option value="rename">重命名</option>
+              </select>
+            </label>
             <button id="sftp-upload" class="transfer-button" type="button" title="上传到远端">
               <i data-lucide="arrow-right"></i>
               <span>上传</span>
