@@ -146,6 +146,7 @@ export interface TerminalLogStartRequest {
   profileName: string;
   host: string;
   username: string;
+  directoryPath?: string;
 }
 
 export interface TerminalLogStartResponse {
@@ -154,6 +155,31 @@ export interface TerminalLogStartResponse {
 
 export interface TerminalLogStopRequest {
   sessionId: string;
+}
+
+export interface TerminalLogDirectoryRequest {
+  directoryPath?: string;
+}
+
+export interface TerminalLogDirectorySelectResponse {
+  canceled: boolean;
+  directoryPath?: string;
+}
+
+export interface TerminalLogEntry {
+  name: string;
+  filePath: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export interface TerminalLogListResponse {
+  directoryPath: string;
+  entries: TerminalLogEntry[];
+}
+
+export interface TerminalLogOpenFileRequest {
+  filePath: string;
 }
 
 export interface KnownHostEntry {

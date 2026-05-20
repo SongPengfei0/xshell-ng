@@ -19,6 +19,7 @@ import type {
   SftpEditStatusEvent,
   SshProfile,
   SshProxyType,
+  TerminalLogEntry,
   TunnelCreateRequest,
   TunnelInfo,
   TunnelType,
@@ -46,6 +47,52 @@ interface TerminalTab {
   status: "idle" | "connecting" | "connected" | "disconnected" | "error";
 }
 
+type SplitResizeDirection = "column" | "row";
+
+interface SplitCell {
+  column: number;
+  row: number;
+  columnSpan: number;
+  rowSpan: number;
+}
+
+interface SplitDivider {
+  id: string;
+  direction: SplitResizeDirection;
+  index: number;
+  columnStart: number;
+  columnEnd: number;
+  rowStart: number;
+  rowEnd: number;
+}
+
+interface SplitLayout {
+  columnCount: number;
+  rowCount: number;
+  cells: Map<string, SplitCell>;
+  dividers: SplitDivider[];
+}
+
+interface SplitMetrics {
+  columnGap: number;
+  rowGap: number;
+  columnSizes: number[];
+  rowSizes: number[];
+  columnStarts: number[];
+  columnEnds: number[];
+  rowStarts: number[];
+  rowEnds: number[];
+}
+
+interface SplitResizeState {
+  direction: SplitResizeDirection;
+  index: number;
+  startX: number;
+  startY: number;
+  startColumns: number[];
+  startRows: number[];
+}
+
 const themeIds = ["classic", "midnight", "paper"] as const;
 
 type ThemeId = (typeof themeIds)[number];
@@ -55,6 +102,7 @@ interface Preferences {
   theme: ThemeId;
   cursorBlink: boolean;
   terminalLogging: boolean;
+  logDirectory: string;
 }
 
 interface AppTheme {
@@ -120,6 +168,9 @@ interface RemoteEditItem extends SftpEditOpenResponse {
 const PROFILE_STORAGE_KEY = "xshell-ng.profiles.v1";
 const PREF_STORAGE_KEY = "xshell-ng.preferences.v1";
 const QUICK_COMMAND_STORAGE_KEY = "xshell-ng.quickCommands.v1";
+const SPLIT_RESIZE_HANDLE_SIZE = 11;
+const SPLIT_MIN_COLUMN_SIZE = 160;
+const SPLIT_MIN_ROW_SIZE = 110;
 
 const $ = <T extends HTMLElement>(selector: string) => {
   const element = document.querySelector<T>(selector);
@@ -141,8 +192,10 @@ const elements = {
   disconnectTab: $("#disconnect-tab") as HTMLButtonElement,
   reconnectTab: $("#reconnect-tab") as HTMLButtonElement,
   duplicateTab: $("#duplicate-tab") as HTMLButtonElement,
+  splitTerminal: $("#split-terminal") as HTMLButtonElement,
   openTerminalSearch: $("#open-terminal-search") as HTMLButtonElement,
   openQuickCommands: $("#open-quick-commands") as HTMLButtonElement,
+  openTerminalLogs: $("#open-terminal-logs") as HTMLButtonElement,
   openSftp: $("#open-sftp") as HTMLButtonElement,
   openTunnels: $("#open-tunnels") as HTMLButtonElement,
   openPreferences: $("#open-preferences") as HTMLButtonElement,
@@ -160,11 +213,13 @@ const elements = {
   terminalSearchWord: $("#terminal-search-word") as HTMLButtonElement,
   terminalSearchRegex: $("#terminal-search-regex") as HTMLButtonElement,
   terminalSearchClose: $("#terminal-search-close") as HTMLButtonElement,
+  splitResizeLayer: $("#split-resize-layer"),
   emptyWorkspace: $("#empty-workspace"),
   statusLeft: $("#status-left"),
   statusRight: $("#status-right"),
   connectionDialog: $("#connection-dialog") as HTMLDialogElement,
   preferencesDialog: $("#preferences-dialog") as HTMLDialogElement,
+  terminalLogDialog: $("#terminal-log-dialog") as HTMLDialogElement,
   quickCommandDialog: $("#quick-command-dialog") as HTMLDialogElement,
   knownHostDialog: $("#known-host-dialog") as HTMLDialogElement,
   tunnelDialog: $("#tunnel-dialog") as HTMLDialogElement,
@@ -198,6 +253,15 @@ const elements = {
   prefTheme: $("#pref-theme") as HTMLSelectElement,
   prefCursorBlink: $("#pref-cursor-blink") as HTMLInputElement,
   prefTerminalLogging: $("#pref-terminal-logging") as HTMLInputElement,
+  prefLogDirectory: $("#pref-log-directory") as HTMLInputElement,
+  chooseLogDirectory: $("#choose-log-directory") as HTMLButtonElement,
+  openLogDirectory: $("#open-log-directory") as HTMLButtonElement,
+  terminalLogSummary: $("#terminal-log-summary"),
+  terminalLogDirectory: $("#terminal-log-directory"),
+  terminalLogList: $("#terminal-log-list"),
+  terminalLogRefresh: $("#terminal-log-refresh") as HTMLButtonElement,
+  terminalLogOpenDirectory: $("#terminal-log-open-directory") as HTMLButtonElement,
+  terminalLogOpenCurrent: $("#terminal-log-open-current") as HTMLButtonElement,
   quickCommandSummary: $("#quick-command-summary"),
   quickCommandList: $("#quick-command-list"),
   quickCommandForm: $("#quick-command-form") as HTMLFormElement,
@@ -255,9 +319,17 @@ const elements = {
 let profiles: SshProfile[] = loadProfiles();
 let tabs: TerminalTab[] = [];
 let activeTabId: string | undefined;
+let isSplitView = false;
+let splitLayout: SplitLayout | undefined;
+let splitLayoutKey = "";
+let splitColumnFractions: number[] = [];
+let splitRowFractions: number[] = [];
+let splitResizeState: SplitResizeState | undefined;
+let splitResizeFrame: number | undefined;
 let editingProfileId: string | undefined;
 let preferences: Preferences = loadPreferences();
 let quickCommands: QuickCommand[] = loadQuickCommands();
+let terminalLogEntries: TerminalLogEntry[] = [];
 let activeQuickCommandId: string | undefined;
 let knownHostEntries: KnownHostEntry[] = [];
 let toastTimer: number | undefined;
@@ -795,7 +867,8 @@ function loadPreferences(): Preferences {
         fontSize: Number(parsed.fontSize || 14),
         theme: isThemeId(parsed.theme) ? parsed.theme : "classic",
         cursorBlink: parsed.cursorBlink ?? true,
-        terminalLogging: Boolean(parsed.terminalLogging)
+        terminalLogging: Boolean(parsed.terminalLogging),
+        logDirectory: typeof parsed.logDirectory === "string" ? parsed.logDirectory : ""
       };
     }
   } catch {
@@ -806,7 +879,8 @@ function loadPreferences(): Preferences {
     fontSize: 14,
     theme: "classic",
     cursorBlink: true,
-    terminalLogging: false
+    terminalLogging: false,
+    logDirectory: ""
   };
 }
 
@@ -965,6 +1039,192 @@ function renderProfiles() {
   refreshIcons();
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function createSplitLayout(): SplitLayout | undefined {
+  if (tabs.length < 2) {
+    return undefined;
+  }
+
+  const cells = new Map<string, SplitCell>();
+  const dividers: SplitDivider[] = [];
+
+  if (tabs.length === 2) {
+    cells.set(tabs[0].id, { column: 0, row: 0, columnSpan: 1, rowSpan: 1 });
+    cells.set(tabs[1].id, { column: 1, row: 0, columnSpan: 1, rowSpan: 1 });
+    dividers.push({
+      id: "column-0",
+      direction: "column",
+      index: 0,
+      columnStart: 0,
+      columnEnd: 2,
+      rowStart: 0,
+      rowEnd: 1
+    });
+    return { columnCount: 2, rowCount: 1, cells, dividers };
+  }
+
+  if (tabs.length === 3) {
+    cells.set(tabs[0].id, { column: 0, row: 0, columnSpan: 1, rowSpan: 2 });
+    cells.set(tabs[1].id, { column: 1, row: 0, columnSpan: 1, rowSpan: 1 });
+    cells.set(tabs[2].id, { column: 1, row: 1, columnSpan: 1, rowSpan: 1 });
+    dividers.push(
+      {
+        id: "column-0",
+        direction: "column",
+        index: 0,
+        columnStart: 0,
+        columnEnd: 2,
+        rowStart: 0,
+        rowEnd: 2
+      },
+      {
+        id: "row-0-secondary",
+        direction: "row",
+        index: 0,
+        columnStart: 1,
+        columnEnd: 2,
+        rowStart: 0,
+        rowEnd: 2
+      }
+    );
+    return { columnCount: 2, rowCount: 2, cells, dividers };
+  }
+
+  const columnCount = tabs.length === 4 ? 2 : Math.ceil(Math.sqrt(tabs.length));
+  const rowCount = Math.ceil(tabs.length / columnCount);
+
+  tabs.forEach((tab, index) => {
+    cells.set(tab.id, {
+      column: index % columnCount,
+      row: Math.floor(index / columnCount),
+      columnSpan: 1,
+      rowSpan: 1
+    });
+  });
+
+  for (let index = 0; index < columnCount - 1; index += 1) {
+    dividers.push({
+      id: `column-${index}`,
+      direction: "column",
+      index,
+      columnStart: 0,
+      columnEnd: columnCount,
+      rowStart: 0,
+      rowEnd: rowCount
+    });
+  }
+
+  for (let index = 0; index < rowCount - 1; index += 1) {
+    dividers.push({
+      id: `row-${index}`,
+      direction: "row",
+      index,
+      columnStart: 0,
+      columnEnd: columnCount,
+      rowStart: 0,
+      rowEnd: rowCount
+    });
+  }
+
+  return { columnCount, rowCount, cells, dividers };
+}
+
+function getSplitLayoutKey(layout: SplitLayout) {
+  return `${tabs.length}:${layout.columnCount}x${layout.rowCount}`;
+}
+
+function getDefaultSplitFractions(layout: SplitLayout, direction: SplitResizeDirection) {
+  const count = direction === "column" ? layout.columnCount : layout.rowCount;
+  if (direction === "column" && tabs.length === 3 && count === 2) {
+    return [1.35, 1];
+  }
+  return Array.from({ length: count }, () => 1);
+}
+
+function ensureSplitFractions(layout: SplitLayout, force = false) {
+  const nextLayoutKey = getSplitLayoutKey(layout);
+  const shouldReset = force || splitLayoutKey !== nextLayoutKey;
+  if (shouldReset || splitColumnFractions.length !== layout.columnCount) {
+    splitColumnFractions = getDefaultSplitFractions(layout, "column");
+  }
+  if (shouldReset || splitRowFractions.length !== layout.rowCount) {
+    splitRowFractions = getDefaultSplitFractions(layout, "row");
+  }
+  splitLayoutKey = nextLayoutKey;
+}
+
+function formatSplitFraction(value: number) {
+  return String(Math.max(0.1, Number(value.toFixed(3))));
+}
+
+function applySplitGridStyles(layout: SplitLayout) {
+  elements.terminalStack.style.setProperty(
+    "--split-columns",
+    splitColumnFractions
+      .slice(0, layout.columnCount)
+      .map((fraction) => `minmax(0, ${formatSplitFraction(fraction)}fr)`)
+      .join(" ")
+  );
+  elements.terminalStack.style.setProperty(
+    "--split-rows",
+    splitRowFractions
+      .slice(0, layout.rowCount)
+      .map((fraction) => `minmax(0, ${formatSplitFraction(fraction)}fr)`)
+      .join(" ")
+  );
+}
+
+function clearSplitGridStyles() {
+  splitLayout = undefined;
+  elements.terminalStack.style.removeProperty("--split-columns");
+  elements.terminalStack.style.removeProperty("--split-rows");
+  elements.splitResizeLayer.innerHTML = "";
+  for (const tab of tabs) {
+    tab.element.style.gridColumn = "";
+    tab.element.style.gridRow = "";
+  }
+
+  if (tabs.length < 2) {
+    splitLayoutKey = "";
+    splitColumnFractions = [];
+    splitRowFractions = [];
+  }
+}
+
+function renderSplitLayout() {
+  if (!isSplitView) {
+    clearSplitGridStyles();
+    return;
+  }
+
+  const layout = createSplitLayout();
+  if (!layout) {
+    clearSplitGridStyles();
+    return;
+  }
+
+  splitLayout = layout;
+  ensureSplitFractions(layout);
+  applySplitGridStyles(layout);
+
+  for (const tab of tabs) {
+    const cell = layout.cells.get(tab.id);
+    if (!cell) {
+      tab.element.style.gridColumn = "";
+      tab.element.style.gridRow = "";
+      continue;
+    }
+
+    tab.element.style.gridColumn = `${cell.column + 1} / span ${cell.columnSpan}`;
+    tab.element.style.gridRow = `${cell.row + 1} / span ${cell.rowSpan}`;
+  }
+
+  window.requestAnimationFrame(renderSplitResizeHandles);
+}
+
 function syncToolbarState() {
   const activeTab = getActiveTab();
   const hasTab = Boolean(activeTab);
@@ -974,12 +1234,19 @@ function syncToolbarState() {
   elements.disconnectTab.disabled = !hasSession;
   elements.reconnectTab.disabled = !hasTab;
   elements.duplicateTab.disabled = !hasTab;
+  elements.splitTerminal.disabled = tabs.length < 2;
+  elements.splitTerminal.setAttribute("aria-pressed", String(isSplitView));
+  elements.splitTerminal.title = isSplitView ? "关闭分屏终端" : "打开分屏终端";
   elements.openTerminalSearch.disabled = !hasTab;
   elements.openSftp.disabled = !isConnected;
   elements.openTunnels.disabled = !isConnected;
 }
 
 function renderTabs() {
+  if (tabs.length < 2) {
+    isSplitView = false;
+  }
+
   elements.tabStrip.innerHTML = tabs
     .map((tab) => {
       const isActive = tab.id === activeTabId;
@@ -1004,11 +1271,22 @@ function renderTabs() {
     .join("");
 
   elements.emptyWorkspace.classList.toggle("hidden", tabs.length > 0);
+  elements.terminalStack.classList.toggle("split-mode", isSplitView);
+  renderSplitLayout();
   tabs.forEach((tab) => {
-    tab.element.classList.toggle("active", tab.id === activeTabId);
+    const isActive = tab.id === activeTabId;
+    tab.element.classList.toggle("active", isActive);
+    tab.element.dataset.title = tab.title;
+    const titleElement = tab.element.querySelector<HTMLElement>(".terminal-pane-title");
+    if (titleElement) {
+      titleElement.textContent = tab.title;
+    }
   });
   refreshIcons();
   syncToolbarState();
+  if (elements.terminalLogDialog.open) {
+    renderTerminalLogs();
+  }
   fitActiveTerminal();
   setStatus(tabs.length ? "终端就绪" : "就绪");
 }
@@ -1146,6 +1424,278 @@ function getConnectedActiveTab() {
     return undefined;
   }
   return activeTab;
+}
+
+function visibleTerminalTabs() {
+  if (isSplitView) {
+    return tabs;
+  }
+
+  const activeTab = getActiveTab();
+  return activeTab ? [activeTab] : [];
+}
+
+function activateTab(tabId: string) {
+  if (!tabs.some((tab) => tab.id === tabId)) {
+    return;
+  }
+
+  const previousTab = getActiveTab();
+  const changed = previousTab?.id !== tabId;
+  if (changed && isTerminalSearchOpen) {
+    previousTab?.searchAddon.clearDecorations();
+  }
+
+  activeTabId = tabId;
+  renderTabs();
+  getActiveTab()?.terminal.focus();
+
+  if (changed && isTerminalSearchOpen) {
+    searchActiveTerminal("next", true, true);
+  }
+}
+
+function parsePixel(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function distributeTrackSizes(fractions: number[], size: number, gap: number) {
+  const availableSize = Math.max(0, size - Math.max(0, fractions.length - 1) * gap);
+  const totalFraction = fractions.reduce((sum, fraction) => sum + Math.max(0.1, fraction), 0);
+  return fractions.map((fraction) => (availableSize * Math.max(0.1, fraction)) / totalFraction);
+}
+
+function calculateTrackBounds(sizes: number[], start: number, gap: number) {
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let offset = start;
+  for (const size of sizes) {
+    starts.push(offset);
+    ends.push(offset + size);
+    offset += size + gap;
+  }
+  return { starts, ends };
+}
+
+function getSplitMetrics(layout: SplitLayout): SplitMetrics {
+  const style = window.getComputedStyle(elements.terminalStack);
+  const paddingLeft = parsePixel(style.paddingLeft);
+  const paddingRight = parsePixel(style.paddingRight);
+  const paddingTop = parsePixel(style.paddingTop);
+  const paddingBottom = parsePixel(style.paddingBottom);
+  const columnGap = parsePixel(style.columnGap);
+  const rowGap = parsePixel(style.rowGap);
+  const contentWidth = Math.max(0, elements.terminalStack.clientWidth - paddingLeft - paddingRight);
+  const contentHeight = Math.max(0, elements.terminalStack.clientHeight - paddingTop - paddingBottom);
+  const columnSizes = distributeTrackSizes(
+    splitColumnFractions.slice(0, layout.columnCount),
+    contentWidth,
+    columnGap
+  );
+  const rowSizes = distributeTrackSizes(
+    splitRowFractions.slice(0, layout.rowCount),
+    contentHeight,
+    rowGap
+  );
+  const columnBounds = calculateTrackBounds(columnSizes, paddingLeft, columnGap);
+  const rowBounds = calculateTrackBounds(rowSizes, paddingTop, rowGap);
+
+  return {
+    columnGap,
+    rowGap,
+    columnSizes,
+    rowSizes,
+    columnStarts: columnBounds.starts,
+    columnEnds: columnBounds.ends,
+    rowStarts: rowBounds.starts,
+    rowEnds: rowBounds.ends
+  };
+}
+
+function splitHandlePositionStyle(divider: SplitDivider, metrics: SplitMetrics) {
+  if (divider.direction === "column") {
+    const x = metrics.columnEnds[divider.index] + metrics.columnGap / 2;
+    const top = metrics.rowStarts[divider.rowStart] ?? 0;
+    const bottom = metrics.rowEnds[divider.rowEnd - 1] ?? top;
+    return [
+      `left:${Math.round(x - SPLIT_RESIZE_HANDLE_SIZE / 2)}px`,
+      `top:${Math.round(top)}px`,
+      `width:${SPLIT_RESIZE_HANDLE_SIZE}px`,
+      `height:${Math.max(0, Math.round(bottom - top))}px`
+    ].join(";");
+  }
+
+  const y = metrics.rowEnds[divider.index] + metrics.rowGap / 2;
+  const left = metrics.columnStarts[divider.columnStart] ?? 0;
+  const right = metrics.columnEnds[divider.columnEnd - 1] ?? left;
+  return [
+    `left:${Math.round(left)}px`,
+    `top:${Math.round(y - SPLIT_RESIZE_HANDLE_SIZE / 2)}px`,
+    `width:${Math.max(0, Math.round(right - left))}px`,
+    `height:${SPLIT_RESIZE_HANDLE_SIZE}px`
+  ].join(";");
+}
+
+function renderSplitResizeHandles() {
+  if (!isSplitView || !splitLayout) {
+    elements.splitResizeLayer.innerHTML = "";
+    return;
+  }
+
+  const metrics = getSplitMetrics(splitLayout);
+  elements.splitResizeLayer.innerHTML = splitLayout.dividers
+    .map((divider) => {
+      const orientation = divider.direction === "column" ? "vertical" : "horizontal";
+      return `
+        <div
+          class="split-resize-handle ${orientation}"
+          data-direction="${divider.direction}"
+          data-index="${divider.index}"
+          style="${splitHandlePositionStyle(divider, metrics)}"
+          title="拖动调整分屏比例，双击重置"
+        ></div>
+      `;
+    })
+    .join("");
+}
+
+function resizeTrackPair(
+  trackSizes: number[],
+  index: number,
+  delta: number,
+  minTrackSize: number
+) {
+  const nextSizes = [...trackSizes];
+  if (index < 0 || index + 1 >= nextSizes.length) {
+    return nextSizes;
+  }
+
+  const pairSize = nextSizes[index] + nextSizes[index + 1];
+  const minimum = Math.min(minTrackSize, pairSize / 2 - 1);
+  if (!Number.isFinite(minimum) || minimum <= 0) {
+    return nextSizes;
+  }
+
+  const firstSize = clampNumber(nextSizes[index] + delta, minimum, pairSize - minimum);
+  nextSizes[index] = firstSize;
+  nextSizes[index + 1] = pairSize - firstSize;
+  return nextSizes;
+}
+
+function scheduleSplitResizeRender() {
+  if (splitResizeFrame !== undefined) {
+    return;
+  }
+
+  splitResizeFrame = window.requestAnimationFrame(() => {
+    splitResizeFrame = undefined;
+    if (splitLayout) {
+      applySplitGridStyles(splitLayout);
+      renderSplitResizeHandles();
+    }
+    fitActiveTerminal();
+  });
+}
+
+function startSplitResize(event: PointerEvent) {
+  const handle = (event.target as HTMLElement).closest<HTMLElement>(".split-resize-handle");
+  if (!handle || !splitLayout) {
+    return;
+  }
+
+  const direction = handle.dataset.direction as SplitResizeDirection | undefined;
+  const index = Number(handle.dataset.index);
+  if ((direction !== "column" && direction !== "row") || !Number.isInteger(index)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const metrics = getSplitMetrics(splitLayout);
+  splitResizeState = {
+    direction,
+    index,
+    startX: event.clientX,
+    startY: event.clientY,
+    startColumns: metrics.columnSizes,
+    startRows: metrics.rowSizes
+  };
+
+  document.body.classList.add("split-resizing");
+  document.body.classList.toggle("split-resizing-column", direction === "column");
+  document.body.classList.toggle("split-resizing-row", direction === "row");
+  window.addEventListener("pointermove", handleSplitResizeMove);
+  window.addEventListener("pointerup", stopSplitResize);
+  window.addEventListener("pointercancel", stopSplitResize);
+}
+
+function handleSplitResizeMove(event: PointerEvent) {
+  if (!splitResizeState) {
+    return;
+  }
+
+  if (splitResizeState.direction === "column") {
+    splitColumnFractions = resizeTrackPair(
+      splitResizeState.startColumns,
+      splitResizeState.index,
+      event.clientX - splitResizeState.startX,
+      SPLIT_MIN_COLUMN_SIZE
+    );
+  } else {
+    splitRowFractions = resizeTrackPair(
+      splitResizeState.startRows,
+      splitResizeState.index,
+      event.clientY - splitResizeState.startY,
+      SPLIT_MIN_ROW_SIZE
+    );
+  }
+
+  scheduleSplitResizeRender();
+}
+
+function stopSplitResize() {
+  splitResizeState = undefined;
+  document.body.classList.remove("split-resizing", "split-resizing-column", "split-resizing-row");
+  window.removeEventListener("pointermove", handleSplitResizeMove);
+  window.removeEventListener("pointerup", stopSplitResize);
+  window.removeEventListener("pointercancel", stopSplitResize);
+  renderSplitResizeHandles();
+  fitActiveTerminal();
+}
+
+function handleSplitResizeDoubleClick(event: MouseEvent) {
+  const handle = (event.target as HTMLElement).closest(".split-resize-handle");
+  if (!handle) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  resetSplitLayout();
+}
+
+function resetSplitLayout(showToastMessage = true) {
+  const layout = createSplitLayout();
+  if (!isSplitView || !layout) {
+    if (showToastMessage) {
+      showToast("分屏未开启");
+    }
+    return;
+  }
+
+  splitLayout = layout;
+  ensureSplitFractions(layout, true);
+  renderTabs();
+  getActiveTab()?.terminal.focus();
+  if (showToastMessage) {
+    showToast("分屏比例已重置");
+  }
+}
+
+function handleTerminalStackGeometryChange() {
+  renderSplitResizeHandles();
+  fitActiveTerminal();
 }
 
 function quickCommandPreview(command: string) {
@@ -1574,26 +2124,41 @@ function toggleTerminalSearchOption(button: HTMLButtonElement) {
 }
 
 function fitActiveTerminal() {
-  const activeTab = getActiveTab();
-  if (!activeTab) {
+  const visibleTabs = visibleTerminalTabs();
+  if (visibleTabs.length === 0) {
     return;
   }
 
   window.requestAnimationFrame(() => {
-    activeTab.fitAddon.fit();
-    if (activeTab.sessionId) {
+    for (const tab of visibleTabs) {
+      tab.fitAddon.fit();
+      if (!tab.sessionId) {
+        continue;
+      }
       window.xshellBridge.resize({
-        sessionId: activeTab.sessionId,
-        cols: activeTab.terminal.cols,
-        rows: activeTab.terminal.rows
+        sessionId: tab.sessionId,
+        cols: tab.terminal.cols,
+        rows: tab.terminal.rows
       });
     }
   });
 }
 
 function buildTerminal(profile: SshProfile): TerminalTab {
+  const tabId = createId();
   const element = document.createElement("div");
   element.className = "terminal-pane";
+  element.dataset.tabId = tabId;
+  element.dataset.title = profile.name || profile.host;
+  const head = document.createElement("div");
+  head.className = "terminal-pane-head";
+  const title = document.createElement("span");
+  title.className = "terminal-pane-title";
+  title.textContent = profile.name || profile.host;
+  head.appendChild(title);
+  const surface = document.createElement("div");
+  surface.className = "terminal-surface";
+  element.append(head, surface);
   elements.terminalStack.appendChild(element);
 
   const terminal = new Terminal({
@@ -1613,10 +2178,10 @@ function buildTerminal(profile: SshProfile): TerminalTab {
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new WebLinksAddon());
   terminal.loadAddon(searchAddon);
-  terminal.open(element);
+  terminal.open(surface);
 
   const tab: TerminalTab = {
-    id: createId(),
+    id: tabId,
     title: profile.name || profile.host,
     profile,
     terminal,
@@ -1717,10 +2282,14 @@ async function startTerminalLogging(tab: TerminalTab) {
       sessionId: tab.sessionId,
       profileName: tab.profile.name,
       host: tab.profile.host,
-      username: tab.profile.username
+      username: tab.profile.username,
+      directoryPath: preferences.logDirectory.trim() || undefined
     });
     tab.logFilePath = response.filePath;
     tab.terminal.writeln(`\r\n\x1b[36m终端日志：${response.filePath}\x1b[0m`);
+    if (elements.terminalLogDialog.open) {
+      void refreshTerminalLogs({ quiet: true });
+    }
   } catch (error) {
     showToast(`开启终端日志失败：${getErrorMessage(error)}`);
   }
@@ -1741,6 +2310,145 @@ async function stopTerminalLogging(tab: TerminalTab) {
     showToast(`停止终端日志失败：${getErrorMessage(error)}`);
   } finally {
     clearTerminalLogging(tab);
+    if (elements.terminalLogDialog.open) {
+      renderTerminalLogs();
+    }
+  }
+}
+
+function getConfiguredLogDirectory() {
+  return preferences.logDirectory.trim() || undefined;
+}
+
+async function fillDefaultLogDirectoryPlaceholder() {
+  try {
+    const directoryPath = await window.xshellBridge.terminalLogDefaultDirectory();
+    elements.prefLogDirectory.placeholder = `默认：${directoryPath}`;
+    if (!elements.prefLogDirectory.value.trim()) {
+      elements.prefLogDirectory.title = directoryPath;
+    }
+  } catch {
+    elements.prefLogDirectory.placeholder = "使用默认日志目录";
+  }
+}
+
+async function chooseLogDirectory() {
+  try {
+    const result = await window.xshellBridge.terminalLogSelectDirectory({
+      directoryPath: elements.prefLogDirectory.value.trim() || getConfiguredLogDirectory()
+    });
+    if (!result.canceled && result.directoryPath) {
+      elements.prefLogDirectory.value = result.directoryPath;
+      elements.prefLogDirectory.title = result.directoryPath;
+    }
+  } catch (error) {
+    showToast(`选择日志目录失败：${getErrorMessage(error)}`);
+  }
+}
+
+async function openConfiguredLogDirectory() {
+  try {
+    await window.xshellBridge.terminalLogOpenDirectory({
+      directoryPath: elements.prefLogDirectory.value.trim() || getConfiguredLogDirectory()
+    });
+  } catch (error) {
+    showToast(`打开日志目录失败：${getErrorMessage(error)}`);
+  }
+}
+
+function renderTerminalLogs() {
+  elements.terminalLogSummary.textContent = `${terminalLogEntries.length} 个日志文件`;
+  elements.terminalLogOpenCurrent.disabled = !getActiveTab()?.logFilePath;
+
+  if (terminalLogEntries.length === 0) {
+    elements.terminalLogList.innerHTML = `
+      <div class="terminal-log-empty">
+        <i data-lucide="file-clock"></i>
+        <span>暂无终端日志</span>
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  const activeLogPath = getActiveTab()?.logFilePath;
+  elements.terminalLogList.innerHTML = terminalLogEntries
+    .map((entry) => {
+      const isActive = activeLogPath === entry.filePath;
+      return `
+        <article class="terminal-log-row ${isActive ? "active" : ""}" data-log-path="${escapeHtml(entry.filePath)}">
+          <div class="terminal-log-icon">
+            <i data-lucide="${isActive ? "file-check-2" : "scroll-text"}"></i>
+          </div>
+          <div class="terminal-log-main">
+            <strong>${escapeHtml(entry.name)}</strong>
+            <span>${escapeHtml(entry.filePath)}</span>
+            <small>${formatDate(entry.modifiedAt)} · ${formatBytes(entry.size)}</small>
+          </div>
+          <div class="terminal-log-actions">
+            <button class="icon-button" type="button" data-action="open-log" title="打开日志">
+              <i data-lucide="external-link"></i>
+            </button>
+            <button class="icon-button" type="button" data-action="show-log" title="定位文件">
+              <i data-lucide="folder-search"></i>
+            </button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+  refreshIcons();
+}
+
+async function refreshTerminalLogs(options: { quiet?: boolean } = {}) {
+  elements.terminalLogSummary.textContent = "读取中...";
+  try {
+    const response = await window.xshellBridge.terminalLogList({
+      directoryPath: getConfiguredLogDirectory()
+    });
+    terminalLogEntries = response.entries;
+    elements.terminalLogDirectory.textContent = response.directoryPath;
+    elements.terminalLogDirectory.title = response.directoryPath;
+    renderTerminalLogs();
+  } catch (error) {
+    terminalLogEntries = [];
+    renderTerminalLogs();
+    if (!options.quiet) {
+      showToast(`读取日志失败：${getErrorMessage(error)}`);
+    }
+  }
+}
+
+async function openTerminalLogs() {
+  if (!elements.terminalLogDialog.open) {
+    elements.terminalLogDialog.showModal();
+  }
+  await refreshTerminalLogs();
+}
+
+async function openTerminalLogFile(filePath?: string) {
+  if (!filePath) {
+    showToast("没有可打开的日志文件");
+    return;
+  }
+
+  try {
+    await window.xshellBridge.terminalLogOpenFile({ filePath });
+  } catch (error) {
+    showToast(`打开日志失败：${getErrorMessage(error)}`);
+  }
+}
+
+async function showTerminalLogFile(filePath?: string) {
+  if (!filePath) {
+    showToast("没有可定位的日志文件");
+    return;
+  }
+
+  try {
+    await window.xshellBridge.terminalLogShowFile({ filePath });
+  } catch (error) {
+    showToast(`定位日志失败：${getErrorMessage(error)}`);
   }
 }
 
@@ -2191,6 +2899,9 @@ function openPreferences() {
   elements.prefTheme.value = preferences.theme;
   elements.prefCursorBlink.checked = preferences.cursorBlink;
   elements.prefTerminalLogging.checked = preferences.terminalLogging;
+  elements.prefLogDirectory.value = preferences.logDirectory;
+  elements.prefLogDirectory.title = preferences.logDirectory;
+  void fillDefaultLogDirectoryPlaceholder();
   elements.preferencesDialog.showModal();
 }
 
@@ -3812,6 +4523,17 @@ function toggleSidebar(force?: boolean) {
   fitActiveTerminal();
 }
 
+function toggleSplitView(force?: boolean) {
+  if (tabs.length < 2) {
+    showToast("至少打开两个标签后才能分屏");
+    return;
+  }
+
+  isSplitView = force ?? !isSplitView;
+  renderTabs();
+  getActiveTab()?.terminal.focus();
+}
+
 function handleCommand(command: string) {
   switch (command) {
     case "new-session":
@@ -3855,6 +4577,12 @@ function handleCommand(command: string) {
     case "toggle-sidebar":
       toggleSidebar();
       break;
+    case "toggle-split-view":
+      toggleSplitView();
+      break;
+    case "reset-split-layout":
+      resetSplitLayout();
+      break;
     case "import-profiles":
       void importProfiles();
       break;
@@ -3863,6 +4591,9 @@ function handleCommand(command: string) {
       break;
     case "open-quick-commands":
       openQuickCommands();
+      break;
+    case "open-terminal-logs":
+      void openTerminalLogs();
       break;
     case "open-sftp":
       void openSftpPanel();
@@ -3942,13 +4673,47 @@ function wireEvents() {
   elements.disconnectTab.addEventListener("click", () => void disconnectActiveTab());
   elements.reconnectTab.addEventListener("click", () => void reconnectActiveTab());
   elements.duplicateTab.addEventListener("click", duplicateActiveTab);
+  elements.splitTerminal.addEventListener("click", () => toggleSplitView());
+  elements.splitResizeLayer.addEventListener("pointerdown", startSplitResize);
+  elements.splitResizeLayer.addEventListener("dblclick", handleSplitResizeDoubleClick);
   elements.openTerminalSearch.addEventListener("click", () => openTerminalSearch());
   elements.openQuickCommands.addEventListener("click", openQuickCommands);
+  elements.openTerminalLogs.addEventListener("click", () => void openTerminalLogs());
   elements.openPreferences.addEventListener("click", openPreferences);
   elements.openSftp.addEventListener("click", () => void openSftpPanel());
   elements.openTunnels.addEventListener("click", () => void openTunnelsPanel());
   $("#import-profiles").addEventListener("click", () => void importProfiles());
   $("#export-profiles").addEventListener("click", () => void exportProfiles());
+  elements.chooseLogDirectory.addEventListener("click", () => void chooseLogDirectory());
+  elements.openLogDirectory.addEventListener("click", () => void openConfiguredLogDirectory());
+  $("#close-terminal-logs").addEventListener("click", () => elements.terminalLogDialog.close());
+  $("#terminal-log-close-footer").addEventListener("click", () => elements.terminalLogDialog.close());
+  elements.terminalLogRefresh.addEventListener("click", () => void refreshTerminalLogs());
+  elements.terminalLogOpenDirectory.addEventListener("click", () =>
+    void window.xshellBridge
+      .terminalLogOpenDirectory({ directoryPath: getConfiguredLogDirectory() })
+      .catch((error) => showToast(`打开日志目录失败：${getErrorMessage(error)}`))
+  );
+  elements.terminalLogOpenCurrent.addEventListener("click", () =>
+    void openTerminalLogFile(getActiveTab()?.logFilePath)
+  );
+  elements.terminalLogList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".terminal-log-row");
+    if (!row?.dataset.logPath) {
+      return;
+    }
+
+    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+    if (action === "open-log") {
+      void openTerminalLogFile(row.dataset.logPath);
+      return;
+    }
+    if (action === "show-log") {
+      void showTerminalLogFile(row.dataset.logPath);
+      return;
+    }
+  });
   $("#close-quick-commands").addEventListener("click", () => elements.quickCommandDialog.close());
   $("#quick-command-new").addEventListener("click", newQuickCommand);
   elements.quickCommandForm.addEventListener("submit", (event) => {
@@ -4258,15 +5023,18 @@ function wireEvents() {
       return;
     }
 
-    activeTabId = tabButton.dataset.tabId;
-    renderTabs();
-    getActiveTab()?.terminal.focus();
-    if (isTerminalSearchOpen) {
-      searchActiveTerminal("next", true, true);
+    if (tabButton.dataset.tabId) {
+      activateTab(tabButton.dataset.tabId);
     }
   });
 
-  elements.terminalStack.addEventListener("pointerdown", () => {
+  elements.terminalStack.addEventListener("pointerdown", (event) => {
+    const target = event.target as HTMLElement;
+    const pane = target.closest<HTMLElement>(".terminal-pane");
+    if (pane?.dataset.tabId && pane.dataset.tabId !== activeTabId) {
+      activateTab(pane.dataset.tabId);
+      return;
+    }
     getActiveTab()?.terminal.focus();
   });
 
@@ -4345,25 +5113,38 @@ function wireEvents() {
 
   elements.preferencesDialog.addEventListener("close", () => {
     const wasLogging = preferences.terminalLogging;
+    const previousLogDirectory = preferences.logDirectory;
     preferences = {
       fontSize: Number(elements.prefFontSize.value || 14),
       theme: isThemeId(elements.prefTheme.value) ? elements.prefTheme.value : "classic",
       cursorBlink: elements.prefCursorBlink.checked,
-      terminalLogging: elements.prefTerminalLogging.checked
+      terminalLogging: elements.prefTerminalLogging.checked,
+      logDirectory: elements.prefLogDirectory.value.trim()
     };
     savePreferences();
     applyPreferences();
-    if (!wasLogging && preferences.terminalLogging) {
+    const logDirectoryChanged = previousLogDirectory !== preferences.logDirectory;
+    if (preferences.terminalLogging && !wasLogging) {
       tabs
         .filter((tab) => tab.status === "connected")
         .forEach((tab) => void startTerminalLogging(tab));
+    }
+    if (preferences.terminalLogging && wasLogging && logDirectoryChanged) {
+      tabs
+        .filter((tab) => tab.status === "connected")
+        .forEach((tab) => {
+          void stopTerminalLogging(tab).then(() => startTerminalLogging(tab));
+        });
+    }
+    if (logDirectoryChanged && elements.terminalLogDialog.open) {
+      void refreshTerminalLogs({ quiet: true });
     }
     if (wasLogging && !preferences.terminalLogging) {
       tabs.forEach((tab) => void stopTerminalLogging(tab));
     }
   });
 
-  window.addEventListener("resize", fitActiveTerminal);
+  window.addEventListener("resize", handleTerminalStackGeometryChange);
   window.addEventListener(
     "keydown",
     (event) => {
@@ -4457,7 +5238,7 @@ function wireEvents() {
     renderWindowState(isFullScreen, isMaximized);
   });
 
-  new ResizeObserver(fitActiveTerminal).observe(elements.terminalStack);
+  new ResizeObserver(handleTerminalStackGeometryChange).observe(elements.terminalStack);
 }
 
 renderThemeOptions();

@@ -58,6 +58,10 @@ import type {
   SftpRenameRequest,
   SftpUploadRequest,
   SavedTunnelConfig,
+  TerminalLogDirectoryRequest,
+  TerminalLogDirectorySelectResponse,
+  TerminalLogListResponse,
+  TerminalLogOpenFileRequest,
   TerminalLogStartRequest,
   TerminalLogStartResponse,
   TerminalLogStopRequest,
@@ -708,8 +712,13 @@ const sanitizeFileName = (value: string) => {
 const timestampForFileName = () =>
   new Date().toISOString().replace(/[:.]/g, "-");
 
-const terminalLogDirectory = () =>
+const defaultTerminalLogDirectory = () =>
   path.join(app.getPath("documents"), "XShell NG Logs");
+
+const resolveTerminalLogDirectory = (directoryPath?: string) => {
+  const safePath = directoryPath?.trim();
+  return safePath ? path.resolve(safePath) : defaultTerminalLogDirectory();
+};
 
 const appendTerminalLog = (sessionId: string, data: string) => {
   const stream = terminalLogs.get(sessionId);
@@ -733,7 +742,7 @@ const startTerminalLog = async (
 ): Promise<TerminalLogStartResponse> => {
   stopTerminalLog(request.sessionId);
 
-  const directory = terminalLogDirectory();
+  const directory = resolveTerminalLogDirectory(request.directoryPath);
   await fs.promises.mkdir(directory, { recursive: true });
   const label = sanitizeFileName(
     `${request.profileName || request.username}@${request.host}`
@@ -745,6 +754,38 @@ const startTerminalLog = async (
     `XShell NG terminal log\nSession: ${request.username}@${request.host}\nStarted: ${new Date().toISOString()}\n\n`
   );
   return { filePath };
+};
+
+const listTerminalLogs = async (
+  request: TerminalLogDirectoryRequest = {}
+): Promise<TerminalLogListResponse> => {
+  const directoryPath = resolveTerminalLogDirectory(request.directoryPath);
+  await fs.promises.mkdir(directoryPath, { recursive: true });
+  const entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+  const logEntries = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".log"))
+      .map(async (entry) => {
+        const filePath = path.join(directoryPath, entry.name);
+        const stats = await fs.promises.stat(filePath);
+        return {
+          name: entry.name,
+          filePath,
+          size: stats.size,
+          modifiedAt: stats.mtimeMs
+        };
+      })
+  );
+
+  logEntries.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  return { directoryPath, entries: logEntries };
+};
+
+const openPathOrThrow = async (targetPath: string) => {
+  const error = await shell.openPath(targetPath);
+  if (error) {
+    throw new Error(error);
+  }
 };
 
 const readSecretStore = async () => {
@@ -1218,11 +1259,6 @@ const buildMenu = () => {
           accelerator: "Ctrl+N",
           click: () => sendCommandToFocusedWindow("new-session")
         },
-        {
-          label: "快速连接",
-          accelerator: "Ctrl+Q",
-          click: () => sendCommandToFocusedWindow("quick-connect")
-        },
         { type: "separator" },
         {
           label: "导入连接配置",
@@ -1239,6 +1275,12 @@ const buildMenu = () => {
     {
       label: "会话",
       submenu: [
+        {
+          label: "快速连接",
+          accelerator: "Ctrl+Q",
+          click: () => sendCommandToFocusedWindow("quick-connect")
+        },
+        { type: "separator" },
         {
           label: "断开当前会话",
           click: () => sendCommandToFocusedWindow("disconnect-tab")
@@ -1310,6 +1352,15 @@ const buildMenu = () => {
           accelerator: "Ctrl+B",
           click: () => sendCommandToFocusedWindow("toggle-sidebar")
         },
+        { type: "separator" },
+        {
+          label: "切换分屏",
+          click: () => sendCommandToFocusedWindow("toggle-split-view")
+        },
+        {
+          label: "重置分屏比例",
+          click: () => sendCommandToFocusedWindow("reset-split-layout")
+        },
         ...(isDevelopment
           ? [{ role: "toggleDevTools" as const, label: "开发者工具" }]
           : [])
@@ -1322,6 +1373,11 @@ const buildMenu = () => {
           label: "快速命令",
           click: () => sendCommandToFocusedWindow("open-quick-commands")
         },
+        {
+          label: "终端日志",
+          click: () => sendCommandToFocusedWindow("open-terminal-logs")
+        },
+        { type: "separator" },
         {
           label: "SFTP 文件传输",
           click: () => sendCommandToFocusedWindow("open-sftp")
@@ -2935,6 +2991,58 @@ ipcMain.handle(
 
 ipcMain.handle("terminal-log:stop", async (_event, request: TerminalLogStopRequest) => {
   stopTerminalLog(request.sessionId);
+});
+
+ipcMain.handle("terminal-log:default-directory", async () => defaultTerminalLogDirectory());
+
+ipcMain.handle(
+  "terminal-log:select-directory",
+  async (
+    _event,
+    request: TerminalLogDirectoryRequest
+  ): Promise<TerminalLogDirectorySelectResponse> => {
+    const result = await dialog.showOpenDialog({
+      title: "选择终端日志目录",
+      defaultPath: resolveTerminalLogDirectory(request.directoryPath),
+      properties: ["openDirectory", "createDirectory"]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    return { canceled: false, directoryPath: result.filePaths[0] };
+  }
+);
+
+ipcMain.handle(
+  "terminal-log:list",
+  async (_event, request: TerminalLogDirectoryRequest): Promise<TerminalLogListResponse> =>
+    listTerminalLogs(request)
+);
+
+ipcMain.handle("terminal-log:open-directory", async (_event, request: TerminalLogDirectoryRequest) => {
+  const directoryPath = resolveTerminalLogDirectory(request.directoryPath);
+  await fs.promises.mkdir(directoryPath, { recursive: true });
+  await openPathOrThrow(directoryPath);
+});
+
+ipcMain.handle("terminal-log:open-file", async (_event, request: TerminalLogOpenFileRequest) => {
+  const filePath = path.resolve(request.filePath);
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile()) {
+    throw new Error("日志文件无效。");
+  }
+  await openPathOrThrow(filePath);
+});
+
+ipcMain.handle("terminal-log:show-file", async (_event, request: TerminalLogOpenFileRequest) => {
+  const filePath = path.resolve(request.filePath);
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile()) {
+    throw new Error("日志文件无效。");
+  }
+  shell.showItemInFolder(filePath);
 });
 
 ipcMain.handle(

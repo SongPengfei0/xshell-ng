@@ -37,6 +37,10 @@ import type {
   TransferSummary,
   SshDataEvent,
   SshStatusEvent,
+  TerminalLogDirectoryRequest,
+  TerminalLogDirectorySelectResponse,
+  TerminalLogListResponse,
+  TerminalLogOpenFileRequest,
   TerminalLogStartRequest,
   TerminalLogStartResponse,
   TerminalLogStopRequest,
@@ -54,6 +58,16 @@ declare global {
         request: TerminalLogStartRequest
       ) => Promise<TerminalLogStartResponse>;
       terminalLogStop: (request: TerminalLogStopRequest) => Promise<void>;
+      terminalLogDefaultDirectory: () => Promise<string>;
+      terminalLogSelectDirectory: (
+        request: TerminalLogDirectoryRequest
+      ) => Promise<TerminalLogDirectorySelectResponse>;
+      terminalLogList: (
+        request: TerminalLogDirectoryRequest
+      ) => Promise<TerminalLogListResponse>;
+      terminalLogOpenDirectory: (request: TerminalLogDirectoryRequest) => Promise<void>;
+      terminalLogOpenFile: (request: TerminalLogOpenFileRequest) => Promise<void>;
+      terminalLogShowFile: (request: TerminalLogOpenFileRequest) => Promise<void>;
       knownHostsList: () => Promise<KnownHostListResponse>;
       knownHostsDelete: (request: KnownHostDeleteRequest) => Promise<void>;
       knownHostsClear: () => Promise<void>;

@@ -23,7 +23,6 @@
             <button class="fullscreen-menu-trigger" type="button">文件</button>
             <div class="fullscreen-menu-popover">
               <button type="button" data-command="new-session">新建连接配置</button>
-              <button type="button" data-command="quick-connect">快速连接</button>
               <span class="menu-divider"></span>
               <button type="button" data-command="import-profiles">导入连接配置</button>
               <button type="button" data-command="export-profiles">导出连接配置</button>
@@ -34,6 +33,8 @@
           <div class="fullscreen-menu-group">
             <button class="fullscreen-menu-trigger" type="button">会话</button>
             <div class="fullscreen-menu-popover">
+              <button type="button" data-command="quick-connect">快速连接</button>
+              <span class="menu-divider"></span>
               <button type="button" data-command="disconnect-tab">断开当前会话</button>
               <button type="button" data-command="reconnect-tab">重新连接当前标签</button>
               <button type="button" data-command="duplicate-tab">复制当前标签</button>
@@ -57,14 +58,18 @@
             <button class="fullscreen-menu-trigger" type="button">查看</button>
             <div class="fullscreen-menu-popover">
               <button type="button" data-command="toggle-full-screen">切换全屏</button>
-              <button type="button" data-command="exit-full-screen">退出全屏</button>
               <button type="button" data-command="toggle-sidebar">切换侧栏</button>
+              <span class="menu-divider"></span>
+              <button type="button" data-command="toggle-split-view">切换分屏</button>
+              <button type="button" data-command="reset-split-layout">重置分屏比例</button>
             </div>
           </div>
           <div class="fullscreen-menu-group">
             <button class="fullscreen-menu-trigger" type="button">工具</button>
             <div class="fullscreen-menu-popover">
               <button type="button" data-command="open-quick-commands">快速命令</button>
+              <button type="button" data-command="open-terminal-logs">终端日志</button>
+              <span class="menu-divider"></span>
               <button type="button" data-command="open-sftp">SFTP 文件传输</button>
               <button type="button" data-command="open-tunnels">SSH 隧道</button>
               <button type="button" data-command="open-known-hosts">主机密钥</button>
@@ -97,49 +102,68 @@
       </header>
 
       <section class="toolbar" aria-label="工具栏">
-        <button id="new-session" class="tool-button primary" type="button" title="新建连接配置">
-          <i data-lucide="file-plus-2"></i>
-          <span>新建配置</span>
-        </button>
-        <button id="quick-connect" class="tool-button" type="button" title="快速连接">
-          <i data-lucide="bolt"></i>
-          <span>快速连接</span>
-        </button>
+        <div class="toolbar-group" aria-label="连接">
+          <button id="quick-connect" class="tool-button primary" type="button" title="快速连接">
+            <i data-lucide="bolt"></i>
+            <span>连接</span>
+          </button>
+          <button id="new-session" class="tool-button" type="button" title="新建连接配置">
+            <i data-lucide="file-plus-2"></i>
+            <span>新建</span>
+          </button>
+        </div>
         <div class="toolbar-separator"></div>
-        <button id="disconnect-tab" class="tool-button" type="button" title="断开当前 SSH 会话">
-          <i data-lucide="plug-zap"></i>
-          <span>断开</span>
-        </button>
-        <button id="reconnect-tab" class="tool-button" type="button" title="重新连接当前标签">
-          <i data-lucide="rotate-cw"></i>
-          <span>重连</span>
-        </button>
-        <button id="duplicate-tab" class="tool-button" type="button" title="复制当前标签">
-          <i data-lucide="copy-plus"></i>
-          <span>复制标签</span>
-        </button>
+        <div class="toolbar-group" aria-label="会话">
+          <button id="disconnect-tab" class="tool-button" type="button" title="断开当前 SSH 会话">
+            <i data-lucide="plug-zap"></i>
+            <span>断开</span>
+          </button>
+          <button id="reconnect-tab" class="tool-button" type="button" title="重新连接当前标签">
+            <i data-lucide="rotate-cw"></i>
+            <span>重连</span>
+          </button>
+          <button id="duplicate-tab" class="tool-button" type="button" title="复制当前标签">
+            <i data-lucide="copy-plus"></i>
+            <span>复制</span>
+          </button>
+        </div>
         <div class="toolbar-separator"></div>
-        <button id="open-terminal-search" class="tool-button" type="button" title="查找终端输出">
-          <i data-lucide="search"></i>
-          <span>查找</span>
-        </button>
-        <button id="open-quick-commands" class="tool-button" type="button" title="快速命令 / 命令片段">
-          <i data-lucide="terminal"></i>
-          <span>命令</span>
-        </button>
-        <button id="open-sftp" class="tool-button" type="button" title="SFTP 文件传输">
-          <i data-lucide="folder-sync"></i>
-          <span>SFTP</span>
-        </button>
-        <button id="open-tunnels" class="tool-button" type="button" title="SSH 隧道 / 端口转发">
-          <i data-lucide="route"></i>
-          <span>隧道</span>
-        </button>
+        <div class="toolbar-group" aria-label="视图">
+          <button id="split-terminal" class="tool-button" type="button" title="切换分屏终端" aria-pressed="false">
+            <i data-lucide="layout-grid"></i>
+            <span>分屏</span>
+          </button>
+          <button id="open-terminal-search" class="tool-button" type="button" title="查找终端输出">
+            <i data-lucide="search"></i>
+            <span>查找</span>
+          </button>
+        </div>
         <div class="toolbar-separator"></div>
-        <button id="open-preferences" class="tool-button" type="button" title="设置">
-          <i data-lucide="settings-2"></i>
-          <span>设置</span>
-        </button>
+        <div class="toolbar-group" aria-label="工具">
+          <button id="open-quick-commands" class="tool-button" type="button" title="快速命令 / 命令片段">
+            <i data-lucide="terminal"></i>
+            <span>命令</span>
+          </button>
+          <button id="open-terminal-logs" class="tool-button" type="button" title="查看终端日志">
+            <i data-lucide="scroll-text"></i>
+            <span>日志</span>
+          </button>
+          <button id="open-sftp" class="tool-button" type="button" title="SFTP 文件传输">
+            <i data-lucide="folder-sync"></i>
+            <span>SFTP</span>
+          </button>
+          <button id="open-tunnels" class="tool-button" type="button" title="SSH 隧道 / 端口转发">
+            <i data-lucide="route"></i>
+            <span>隧道</span>
+          </button>
+        </div>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-group" aria-label="设置">
+          <button id="open-preferences" class="tool-button" type="button" title="设置">
+            <i data-lucide="settings-2"></i>
+            <span>设置</span>
+          </button>
+        </div>
       </section>
 
       <main class="workspace">
@@ -176,6 +200,7 @@
             </button>
           </div>
           <div id="terminal-stack" class="terminal-stack">
+            <div id="split-resize-layer" class="split-resize-layer" aria-hidden="true"></div>
             <div id="terminal-search" class="terminal-search hidden" role="search">
               <label class="terminal-search-input" for="terminal-search-query">
                 <i data-lucide="search"></i>
@@ -383,11 +408,52 @@
             <input id="pref-terminal-logging" type="checkbox" />
             <span>自动记录终端日志</span>
           </label>
+          <label class="wide">
+            <span>日志目录</span>
+            <div class="path-picker log-directory-picker">
+              <input id="pref-log-directory" type="text" placeholder="使用默认日志目录" />
+              <button id="choose-log-directory" class="icon-button" type="button" title="选择日志目录">
+                <i data-lucide="folder-open"></i>
+              </button>
+              <button id="open-log-directory" class="icon-button" type="button" title="打开日志目录">
+                <i data-lucide="external-link"></i>
+              </button>
+            </div>
+          </label>
         </div>
         <footer class="modal-actions right">
           <button id="save-preferences" class="action-button primary" value="default" type="submit">应用</button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="terminal-log-dialog" class="modal terminal-log-modal">
+      <section class="modal-card terminal-log-card">
+        <header class="modal-head">
+          <div>
+            <strong>终端日志</strong>
+            <span id="terminal-log-summary">0 个日志文件</span>
+          </div>
+          <button id="close-terminal-logs" class="icon-button" type="button" title="关闭">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="terminal-log-toolbar">
+          <span id="terminal-log-directory">日志目录</span>
+          <div>
+            <button id="terminal-log-refresh" class="action-button" type="button">刷新</button>
+            <button id="terminal-log-open-directory" class="action-button" type="button">打开目录</button>
+          </div>
+        </div>
+        <div id="terminal-log-list" class="terminal-log-list"></div>
+        <footer class="modal-actions">
+          <button id="terminal-log-open-current" class="action-button" type="button">打开当前会话日志</button>
+          <div>
+            <button id="terminal-log-close-footer" class="action-button" type="button">关闭</button>
+          </div>
+        </footer>
+      </section>
     </dialog>
 
     <dialog id="quick-command-dialog" class="modal quick-command-modal">

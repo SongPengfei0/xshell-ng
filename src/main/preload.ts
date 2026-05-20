@@ -37,6 +37,10 @@ import type {
   TransferProgressEvent,
   SshDataEvent,
   SshStatusEvent,
+  TerminalLogDirectoryRequest,
+  TerminalLogDirectorySelectResponse,
+  TerminalLogListResponse,
+  TerminalLogOpenFileRequest,
   TerminalLogStartRequest,
   TerminalLogStartResponse,
   TerminalLogStopRequest,
@@ -66,6 +70,22 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("terminal-log:start", request),
   terminalLogStop: (request: TerminalLogStopRequest): Promise<void> =>
     ipcRenderer.invoke("terminal-log:stop", request),
+  terminalLogDefaultDirectory: (): Promise<string> =>
+    ipcRenderer.invoke("terminal-log:default-directory"),
+  terminalLogSelectDirectory: (
+    request: TerminalLogDirectoryRequest
+  ): Promise<TerminalLogDirectorySelectResponse> =>
+    ipcRenderer.invoke("terminal-log:select-directory", request),
+  terminalLogList: (
+    request: TerminalLogDirectoryRequest
+  ): Promise<TerminalLogListResponse> =>
+    ipcRenderer.invoke("terminal-log:list", request),
+  terminalLogOpenDirectory: (request: TerminalLogDirectoryRequest): Promise<void> =>
+    ipcRenderer.invoke("terminal-log:open-directory", request),
+  terminalLogOpenFile: (request: TerminalLogOpenFileRequest): Promise<void> =>
+    ipcRenderer.invoke("terminal-log:open-file", request),
+  terminalLogShowFile: (request: TerminalLogOpenFileRequest): Promise<void> =>
+    ipcRenderer.invoke("terminal-log:show-file", request),
   knownHostsList: (): Promise<KnownHostListResponse> =>
     ipcRenderer.invoke("known-hosts:list"),
   knownHostsDelete: (request: KnownHostDeleteRequest): Promise<void> =>
