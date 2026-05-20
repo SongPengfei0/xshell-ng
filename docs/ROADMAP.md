@@ -5,12 +5,10 @@ This roadmap tracks likely work after the initial public repository setup.
 ## Near Term
 
 - Add UI smoke tests for key workflows.
-- Add configurable terminal log directory and log rotation.
+- Add terminal log rotation.
 
 ## Later
 
-- Remote chmod / permission editing.
-- Login scripts and trigger rules.
 - Split the large renderer state machine into focused modules.
 - Add richer SFTP conflict prompts for per-file decisions.
 

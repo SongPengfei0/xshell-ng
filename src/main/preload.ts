@@ -16,6 +16,7 @@ import type {
   SecretGetRequest,
   SecretSetRequest,
   SendDataRequest,
+  SftpChmodRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
   SftpEditCloseRequest,
@@ -29,6 +30,8 @@ import type {
   SftpPreviewResponse,
   SftpRenameRequest,
   SftpUploadRequest,
+  TunnelCheckRequest,
+  TunnelCheckResponse,
   TunnelCloseRequest,
   TunnelCreateRequest,
   TunnelCreateResponse,
@@ -132,6 +135,8 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("sftp:delete", request),
   sftpRename: (request: SftpRenameRequest): Promise<void> =>
     ipcRenderer.invoke("sftp:rename", request),
+  sftpChmod: (request: SftpChmodRequest): Promise<void> =>
+    ipcRenderer.invoke("sftp:chmod", request),
   sftpCancelTransfer: (request: SftpCancelTransferRequest): Promise<boolean> =>
     ipcRenderer.invoke("sftp:cancel-transfer", request),
   sftpEditOpen: (request: SftpEditOpenRequest): Promise<SftpEditOpenResponse> =>
@@ -144,6 +149,8 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("tunnel:list", request),
   tunnelCreate: (request: TunnelCreateRequest): Promise<TunnelCreateResponse> =>
     ipcRenderer.invoke("tunnel:create", request),
+  tunnelCheck: (request: TunnelCheckRequest): Promise<TunnelCheckResponse> =>
+    ipcRenderer.invoke("tunnel:check", request),
   tunnelClose: (request: TunnelCloseRequest): Promise<void> =>
     ipcRenderer.invoke("tunnel:close", request),
   windowToggleFullScreen: (): Promise<boolean> =>

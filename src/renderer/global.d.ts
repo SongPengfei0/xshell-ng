@@ -16,6 +16,7 @@ import type {
   SecretGetRequest,
   SecretSetRequest,
   SendDataRequest,
+  SftpChmodRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
   SftpEditCloseRequest,
@@ -29,6 +30,8 @@ import type {
   SftpPreviewResponse,
   SftpRenameRequest,
   SftpUploadRequest,
+  TunnelCheckRequest,
+  TunnelCheckResponse,
   TunnelCloseRequest,
   TunnelCreateRequest,
   TunnelCreateResponse,
@@ -93,12 +96,14 @@ declare global {
       sftpMkdir: (request: SftpMkdirRequest) => Promise<void>;
       sftpDelete: (request: SftpDeleteRequest) => Promise<void>;
       sftpRename: (request: SftpRenameRequest) => Promise<void>;
+      sftpChmod: (request: SftpChmodRequest) => Promise<void>;
       sftpCancelTransfer: (request: SftpCancelTransferRequest) => Promise<boolean>;
       sftpEditOpen: (request: SftpEditOpenRequest) => Promise<SftpEditOpenResponse>;
       sftpPreview: (request: SftpPreviewRequest) => Promise<SftpPreviewResponse>;
       sftpEditClose: (request: SftpEditCloseRequest) => Promise<void>;
       tunnelList: (request: TunnelListRequest) => Promise<TunnelInfo[]>;
       tunnelCreate: (request: TunnelCreateRequest) => Promise<TunnelCreateResponse>;
+      tunnelCheck: (request: TunnelCheckRequest) => Promise<TunnelCheckResponse>;
       tunnelClose: (request: TunnelCloseRequest) => Promise<void>;
       windowToggleFullScreen: () => Promise<boolean>;
       windowExitFullScreen: () => Promise<boolean>;

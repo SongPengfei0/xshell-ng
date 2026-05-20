@@ -46,6 +46,7 @@ import type {
   SecretSetRequest,
   SendDataRequest,
   SftpCancelTransferRequest,
+  SftpChmodRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
   SftpEditCloseRequest,
@@ -68,6 +69,9 @@ import type {
   TerminalLogStartRequest,
   TerminalLogStartResponse,
   TerminalLogStopRequest,
+  TunnelCheckRequest,
+  TunnelCheckResponse,
+  TunnelCheckResult,
   TunnelCloseRequest,
   TunnelCreateRequest,
   TunnelCreateResponse,
@@ -292,6 +296,209 @@ const closeProxyResources = (runtime: SshRuntime) => {
   runtime.proxyClient?.end();
   runtime.proxySocket = undefined;
   runtime.proxyClient = undefined;
+};
+
+const connectTcpForCheck = (host: string, port: number, timeoutMs = 5000) =>
+  new Promise<net.Socket>((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const cleanup = () => {
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      socket.off("timeout", onTimeout);
+    };
+    const onConnect = () => {
+      cleanup();
+      socket.setTimeout(0);
+      resolve(socket);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      socket.destroy();
+      reject(error);
+    };
+    const onTimeout = () => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("TCP 连接超时。"));
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    socket.once("timeout", onTimeout);
+  });
+
+const hostForLocalConnect = (host: string) =>
+  host === "0.0.0.0" || host === "::" || host === "" ? "127.0.0.1" : host;
+
+const runTunnelCheck = async (
+  label: string,
+  action: () => Promise<string>
+): Promise<TunnelCheckResult> => {
+  try {
+    return {
+      label,
+      status: "success",
+      message: await action()
+    };
+  } catch (error) {
+    return {
+      label,
+      status: "error",
+      message: getErrorMessage(error)
+    };
+  }
+};
+
+const checkTcpConnect = (host: string, port: number, label: string) =>
+  runTunnelCheck(label, async () => {
+    const socket = await connectTcpForCheck(hostForLocalConnect(host), port);
+    socket.destroy();
+    return `${host}:${port} 可建立 TCP 连接。`;
+  });
+
+const checkLocalBindAvailable = (host: string, port: number) =>
+  runTunnelCheck("监听端口", async () => {
+    if (port === 0) {
+      return "端口 0 将由系统自动分配。";
+    }
+    const server = net.createServer();
+    const assignedPort = await listenTcpServer(server, host, port);
+    await closeTcpServer(server);
+    return `${host}:${assignedPort} 可监听。`;
+  });
+
+const closeCheckedChannel = (channel: ClientChannel) => {
+  channel.end();
+  channel.destroy();
+};
+
+const checkSshForwardTarget = (
+  runtime: SshRuntime,
+  host: string,
+  port: number,
+  label: string
+) =>
+  runTunnelCheck(label, async () => {
+    const channel = await forwardOut(runtime.client, "127.0.0.1", 0, host, port);
+    closeCheckedChannel(channel);
+    return `${host}:${port} 可通过 SSH 访问。`;
+  });
+
+const checkRemoteBindAvailable = (
+  runtime: SshRuntime,
+  host: string,
+  port: number
+) =>
+  runTunnelCheck("远端监听", async () => {
+    const assignedPort = await forwardIn(runtime.client, host, port);
+    try {
+      return port === 0
+        ? `${host}:${assignedPort} 可远端监听。`
+        : `${host}:${port} 可远端监听。`;
+    } finally {
+      await unforwardIn(runtime.client, host, assignedPort).catch(() => undefined);
+    }
+  });
+
+const tunnelCheckResponse = (checks: TunnelCheckResult[]): TunnelCheckResponse => {
+  const failed = checks.filter((check) => check.status === "error");
+  return {
+    ok: failed.length === 0,
+    message: failed.length === 0 ? "端口转发检查通过。" : `端口转发检查失败：${failed.length} 项异常。`,
+    checks
+  };
+};
+
+const createRequestFromTunnel = (tunnel: TunnelRuntime): TunnelCreateRequest => ({
+  sessionId: tunnel.sessionId,
+  type: tunnel.type,
+  name: tunnel.name,
+  localHost: tunnel.localHost,
+  localPort: tunnel.localPort,
+  remoteHost: tunnel.remoteHost,
+  remotePort: tunnel.remotePort,
+  targetHost: tunnel.targetHost,
+  targetPort: tunnel.targetPort
+});
+
+const resolveTunnelCheckRequest = (
+  runtime: SshRuntime,
+  request: TunnelCheckRequest
+): { request: TunnelCreateRequest; running: boolean } => {
+  if (request.tunnelId) {
+    const tunnel = runtime.tunnels.get(request.tunnelId);
+    if (!tunnel) {
+      throw new Error("要检查的隧道不存在。");
+    }
+    return { request: createRequestFromTunnel(tunnel), running: true };
+  }
+
+  if (!request.type) {
+    throw new Error("请选择隧道类型。");
+  }
+  return {
+    request: {
+      sessionId: runtime.id,
+      type: request.type,
+      name: request.name,
+      localHost: request.localHost,
+      localPort: request.localPort,
+      remoteHost: request.remoteHost,
+      remotePort: request.remotePort,
+      targetHost: request.targetHost,
+      targetPort: request.targetPort
+    },
+    running: false
+  };
+};
+
+const checkTunnelAvailability = async (
+  runtime: SshRuntime,
+  checkRequest: TunnelCheckRequest
+): Promise<TunnelCheckResponse> => {
+  const { request, running } = resolveTunnelCheckRequest(runtime, checkRequest);
+  const checks: TunnelCheckResult[] = [];
+
+  if (request.type === "dynamic") {
+    const localHost = normalizeTunnelHost(request.localHost, "127.0.0.1");
+    const localPort = normalizeTunnelPort(request.localPort, "SOCKS 监听端口", true);
+    checks.push(
+      await (running
+        ? checkTcpConnect(localHost, localPort, "SOCKS 监听")
+        : checkLocalBindAvailable(localHost, localPort))
+    );
+    return tunnelCheckResponse(checks);
+  }
+
+  if (request.type === "local") {
+    const localHost = normalizeTunnelHost(request.localHost, "127.0.0.1");
+    const localPort = normalizeTunnelPort(request.localPort, "本地监听端口", true);
+    const targetHost = normalizeTunnelHost(request.targetHost, "127.0.0.1");
+    const targetPort = normalizeTunnelPort(request.targetPort, "远端目标端口");
+    checks.push(
+      await (running
+        ? checkTcpConnect(localHost, localPort, "本地监听")
+        : checkLocalBindAvailable(localHost, localPort))
+    );
+    checks.push(await checkSshForwardTarget(runtime, targetHost, targetPort, "远端目标"));
+    return tunnelCheckResponse(checks);
+  }
+
+  const remoteHost = normalizeTunnelHost(request.remoteHost, "127.0.0.1");
+  const remotePort = normalizeTunnelPort(request.remotePort, "远端监听端口", true);
+  const targetHost = normalizeTunnelHost(request.targetHost, "127.0.0.1");
+  const targetPort = normalizeTunnelPort(request.targetPort, "本地目标端口");
+  checks.push(await checkTcpConnect(targetHost, targetPort, "本地目标"));
+  checks.push(
+    running
+      ? {
+          label: "远端监听",
+          status: "success",
+          message: `${remoteHost}:${remotePort} 已由当前隧道监听。`
+        }
+      : await checkRemoteBindAvailable(runtime, remoteHost, remotePort)
+  );
+  return tunnelCheckResponse(checks);
 };
 
 const bindTunnelStreams = (
@@ -1111,7 +1318,9 @@ const coerceImportedProfile = (value: unknown): ProfileExportRequest["profiles"]
     proxy: coerceProxyConfig(candidate.proxy),
     keepaliveInterval: coerceKeepaliveInterval(candidate.keepaliveInterval),
     autoReconnect: Boolean(candidate.autoReconnect),
-    reconnectLimit: coerceReconnectLimit(candidate.reconnectLimit)
+    reconnectLimit: coerceReconnectLimit(candidate.reconnectLimit),
+    loginScript: typeof candidate.loginScript === "string" ? candidate.loginScript : "",
+    triggerRules: typeof candidate.triggerRules === "string" ? candidate.triggerRules : ""
   };
 };
 
@@ -2105,6 +2314,25 @@ const sftpRename = (sftp: SFTPWrapper, sourcePath: string, targetPath: string) =
       resolve();
     });
   });
+
+const sftpChmod = (sftp: SFTPWrapper, remotePath: string, mode: number) =>
+  new Promise<void>((resolve, reject) => {
+    sftp.chmod(remotePath, mode, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+
+const normalizeSftpMode = (mode: string) => {
+  const value = mode.trim();
+  if (!/^[0-7]{3,4}$/.test(value)) {
+    throw new Error("权限必须是 3 或 4 位八进制数字，例如 644、755、0644。");
+  }
+  return Number.parseInt(value, 8);
+};
 
 const sftpUnlink = (sftp: SFTPWrapper, remotePath: string) =>
   new Promise<void>((resolve, reject) => {
@@ -3118,6 +3346,14 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle(
+  "tunnel:check",
+  async (_event, request: TunnelCheckRequest): Promise<TunnelCheckResponse> => {
+    const runtime = getRuntime(request.sessionId);
+    return checkTunnelAvailability(runtime, request);
+  }
+);
+
 ipcMain.handle("tunnel:close", async (_event, request: TunnelCloseRequest) => {
   const runtime = getRuntime(request.sessionId);
   await closeTunnel(runtime, request.tunnelId, { unforwardRemote: true });
@@ -3589,6 +3825,24 @@ ipcMain.handle("sftp:rename", async (_event, request: SftpRenameRequest) => {
     request.path,
     joinRemotePath(path.posix.dirname(request.path), request.newName)
   );
+});
+
+ipcMain.handle("sftp:chmod", async (_event, request: SftpChmodRequest) => {
+  const sftp = await getSftp(request.sessionId);
+  const mode = normalizeSftpMode(request.mode);
+  const items = request.items?.length
+    ? request.items
+    : request.path
+      ? [{ path: request.path, kind: "file" as FileEntryKind }]
+      : [];
+
+  if (items.length === 0) {
+    throw new Error("请选择要修改权限的远端项目。");
+  }
+
+  for (const item of items) {
+    await sftpChmod(sftp, item.path, mode);
+  }
 });
 
 ipcMain.handle(

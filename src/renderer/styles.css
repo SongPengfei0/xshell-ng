@@ -1037,6 +1037,11 @@ body.split-resizing-row * {
   box-shadow: 0 22px 54px var(--menu-shadow);
 }
 
+#profile-form.modal-card {
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
 .modal-head {
   display: flex;
   align-items: center;
@@ -1133,6 +1138,16 @@ textarea:focus {
 .connection-options-grid {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   padding: 0;
+}
+
+.automation-grid {
+  grid-template-columns: 1fr;
+  gap: 10px;
+  padding: 0;
+}
+
+.automation-grid textarea {
+  min-height: 78px;
 }
 
 .segmented-control {
@@ -1544,8 +1559,9 @@ textarea:focus {
 
 .tunnel-form {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) 52px;
+  grid-template-rows: auto minmax(0, 1fr) minmax(64px, auto) 52px;
   min-height: 0;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--panel);
 }
@@ -1568,8 +1584,41 @@ textarea:focus {
   align-content: start;
 }
 
+.tunnel-check-result {
+  min-height: 64px;
+  max-height: 112px;
+  margin: 0 12px 10px;
+  padding: 9px 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--control-soft-bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.tunnel-check-result.success {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.tunnel-check-result.error {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.tunnel-check-result strong {
+  display: block;
+  margin-bottom: 4px;
+  color: inherit;
+  font-size: 12px;
+}
+
 .modal-actions.tunnel-form-actions {
   min-height: 52px;
+  padding: 0 12px;
   justify-content: space-between;
 }
 

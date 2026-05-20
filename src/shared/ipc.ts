@@ -24,6 +24,8 @@ export interface SshProfile {
   keepaliveInterval?: number;
   autoReconnect?: boolean;
   reconnectLimit?: number;
+  loginScript?: string;
+  triggerRules?: string;
 }
 
 export interface ConnectRequest {
@@ -86,6 +88,14 @@ export interface TunnelListRequest {
   sessionId: string;
 }
 
+export type TunnelCheckStatus = "success" | "warning" | "error";
+
+export interface TunnelCheckResult {
+  label: string;
+  status: TunnelCheckStatus;
+  message: string;
+}
+
 export interface TunnelCreateRequest {
   sessionId: string;
   type: TunnelType;
@@ -113,6 +123,25 @@ export interface SavedTunnelConfig {
 
 export interface TunnelCreateResponse {
   tunnel: TunnelInfo;
+}
+
+export interface TunnelCheckRequest {
+  sessionId: string;
+  tunnelId?: string;
+  type?: TunnelType;
+  name?: string;
+  localHost?: string;
+  localPort?: number;
+  remoteHost?: string;
+  remotePort?: number;
+  targetHost?: string;
+  targetPort?: number;
+}
+
+export interface TunnelCheckResponse {
+  ok: boolean;
+  message: string;
+  checks: TunnelCheckResult[];
 }
 
 export interface TunnelCloseRequest {
@@ -306,6 +335,16 @@ export interface SftpRenameRequest {
   sessionId: string;
   path: string;
   newName: string;
+}
+
+export interface SftpChmodRequest {
+  sessionId: string;
+  mode: string;
+  path?: string;
+  items?: Array<{
+    path: string;
+    kind: FileEntryKind;
+  }>;
 }
 
 export interface SftpCancelTransferRequest {

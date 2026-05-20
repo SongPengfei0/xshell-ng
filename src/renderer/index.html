@@ -363,6 +363,20 @@
           </div>
         </fieldset>
 
+        <fieldset class="auth-fieldset automation-fieldset">
+          <legend>登录脚本 / 触发器</legend>
+          <div class="form-grid automation-grid">
+            <label class="wide">
+              <span>连接后自动执行</span>
+              <textarea id="profile-login-script" rows="4" spellcheck="false" placeholder="uname -a"></textarea>
+            </label>
+            <label class="wide">
+              <span>输出触发回应</span>
+              <textarea id="profile-trigger-rules" rows="4" spellcheck="false" placeholder="Password: => ${PASSWORD}"></textarea>
+            </label>
+          </div>
+        </fieldset>
+
         <footer class="modal-actions">
           <label class="inline-check">
             <input id="profile-save" type="checkbox" checked />
@@ -586,6 +600,7 @@
                 <input id="tunnel-target-port" type="number" min="1" max="65535" value="80" />
               </label>
             </div>
+            <div id="tunnel-check-result" class="tunnel-check-result">未检查</div>
 
             <footer class="modal-actions right tunnel-form-actions">
               <div class="tunnel-save-options">
@@ -598,6 +613,7 @@
                   <span>连接后自动启动</span>
                 </label>
               </div>
+              <button id="tunnel-check" class="action-button" type="button">检查</button>
               <button class="action-button primary" type="submit">新增隧道</button>
             </footer>
           </form>
@@ -722,6 +738,9 @@
                 </button>
                 <button id="remote-rename" class="icon-button" type="button" title="重命名远端项目">
                   <i data-lucide="square-pen"></i>
+                </button>
+                <button id="remote-chmod" class="icon-button" type="button" title="修改远端权限">
+                  <i data-lucide="shield-check"></i>
                 </button>
                 <button id="remote-preview" class="icon-button" type="button" title="预览远端文件">
                   <i data-lucide="eye"></i>

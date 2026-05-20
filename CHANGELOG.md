@@ -6,6 +6,14 @@ The format loosely follows Keep a Changelog, and this project uses semantic vers
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-20
+
+### Added
+
+- Login scripts and trigger rules for sending commands after connect or replying to matched terminal output.
+- SFTP chmod support for changing remote file and directory permissions.
+- Port forwarding availability checks for tunnel form values, running tunnels, and saved tunnel configs.
+
 ## [0.4.0] - 2026-05-20
 
 ### Added

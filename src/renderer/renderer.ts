@@ -21,6 +21,8 @@ import type {
   SshProfile,
   SshProxyType,
   TerminalLogEntry,
+  TunnelCheckRequest,
+  TunnelCheckResponse,
   TunnelCreateRequest,
   TunnelInfo,
   TunnelType,
@@ -45,6 +47,10 @@ interface TerminalTab {
   manualDisconnect?: boolean;
   reconnectAttempts: number;
   reconnectTimer?: number;
+  loginScriptSessionId?: string;
+  triggerSessionId?: string;
+  triggerBuffer: string;
+  firedTriggerRules: Set<string>;
   status: "idle" | "connecting" | "connected" | "disconnected" | "error";
 }
 
@@ -248,6 +254,8 @@ const elements = {
   profileKeepaliveInterval: $("#profile-keepalive-interval") as HTMLInputElement,
   profileAutoReconnect: $("#profile-auto-reconnect") as HTMLInputElement,
   profileReconnectLimit: $("#profile-reconnect-limit") as HTMLInputElement,
+  profileLoginScript: $("#profile-login-script") as HTMLTextAreaElement,
+  profileTriggerRules: $("#profile-trigger-rules") as HTMLTextAreaElement,
   passwordFields: $("#password-fields"),
   keyFields: $("#key-fields"),
   prefFontSize: $("#pref-font-size") as HTMLInputElement,
@@ -289,6 +297,8 @@ const elements = {
   tunnelTargetPortLabel: $("#tunnel-target-port-label"),
   tunnelSaveProfile: $("#tunnel-save-profile") as HTMLInputElement,
   tunnelAutoStart: $("#tunnel-auto-start") as HTMLInputElement,
+  tunnelCheck: $("#tunnel-check") as HTMLButtonElement,
+  tunnelCheckResult: $("#tunnel-check-result"),
   tunnelSummary: $("#tunnel-summary"),
   tunnelList: $("#tunnel-list"),
   savedTunnelSummary: $("#saved-tunnel-summary"),
@@ -301,6 +311,7 @@ const elements = {
   sftpRemoteList: $("#sftp-remote-list"),
   sftpLocalCount: $("#sftp-local-count"),
   sftpRemoteCount: $("#sftp-remote-count"),
+  sftpRemoteChmod: $("#remote-chmod") as HTMLButtonElement,
   sftpStatus: $("#sftp-status"),
   sftpProgressFill: $("#sftp-progress-fill"),
   sftpProgressPercent: $("#sftp-progress-percent"),
@@ -827,6 +838,8 @@ function normalizeProfile(profile: SshProfile): SshProfile {
     keepaliveInterval: normalizeKeepaliveInterval(profile.keepaliveInterval),
     autoReconnect: Boolean(profile.autoReconnect),
     reconnectLimit: normalizeReconnectLimit(profile.reconnectLimit),
+    loginScript: typeof profile.loginScript === "string" ? profile.loginScript : "",
+    triggerRules: typeof profile.triggerRules === "string" ? profile.triggerRules : "",
     tunnels: Array.isArray(profile.tunnels)
       ? profile.tunnels
           .map(normalizeSavedTunnel)
@@ -1403,6 +1416,13 @@ function renderFilePane(side: "local" | "remote") {
           <span class="file-date">${formatDate(entry.modifiedAt)}</span>
           <span class="file-actions">
             ${
+              side === "remote"
+                ? `<button class="file-inline-action" type="button" data-action="chmod" title="修改权限">
+                    <i data-lucide="shield-check"></i>
+                  </button>`
+                : ""
+            }
+            ${
               side === "remote" && entry.kind === "file"
                 ? `<button class="file-inline-action" type="button" data-action="preview" title="预览远端文件">
                     <i data-lucide="eye"></i>
@@ -1442,6 +1462,166 @@ function getConnectedActiveTab() {
     return undefined;
   }
   return activeTab;
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function decodeAutomationEscapes(value: string) {
+  return value
+    .replace(/\\\\/g, "\u0000")
+    .replace(/\\r/g, "\r")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\u0000/g, "\\");
+}
+
+function appendEnter(value: string) {
+  return /[\r\n]$/.test(value) ? value : `${value}\r`;
+}
+
+function expandAutomationVariables(value: string, profile: SshProfile) {
+  const variables: Record<string, string> = {
+    PASSWORD: profile.password ?? "",
+    USERNAME: profile.username,
+    HOST: profile.host,
+    PORT: String(profile.port),
+    PROFILE_NAME: profile.name
+  };
+  return value.replace(/\$\{([A-Z_]+)\}/g, (_match, name: string) => variables[name] ?? "");
+}
+
+function loginScriptCommands(profile: SshProfile) {
+  return (profile.loginScript ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+async function runLoginScript(tab: TerminalTab) {
+  if (!tab.sessionId || tab.status !== "connected") {
+    return;
+  }
+
+  const commands = loginScriptCommands(tab.profile);
+  if (commands.length === 0 || tab.loginScriptSessionId === tab.sessionId) {
+    return;
+  }
+
+  const sessionId = tab.sessionId;
+  tab.loginScriptSessionId = sessionId;
+  await delay(250);
+  for (const command of commands) {
+    if (tab.sessionId !== sessionId || tab.status !== "connected") {
+      return;
+    }
+    window.xshellBridge.sendData({
+      sessionId,
+      data: appendEnter(
+        decodeAutomationEscapes(expandAutomationVariables(command, tab.profile))
+      )
+    });
+    await delay(140);
+  }
+}
+
+interface ParsedTriggerRule {
+  id: string;
+  label: string;
+  response: string;
+  regex?: RegExp;
+}
+
+function regexFromTriggerPattern(pattern: string) {
+  const match = /^\/(.+)\/([dgimsuvy]*)$/.exec(pattern);
+  if (!match) {
+    return undefined;
+  }
+  const flags = [...new Set(match[2].replace(/g/g, "").split(""))].join("");
+  try {
+    return new RegExp(match[1], flags);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTriggerRules(rawRules: string | undefined): ParsedTriggerRule[] {
+  return (rawRules ?? "")
+    .split(/\r?\n/)
+    .map((rawLine, index): ParsedTriggerRule | undefined => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) {
+        return undefined;
+      }
+
+      const separatorIndex = line.includes("=>") ? line.indexOf("=>") : line.indexOf("->");
+      const separatorLength = line.includes("=>") ? 2 : line.includes("->") ? 2 : 0;
+      if (separatorIndex <= 0 || separatorLength === 0) {
+        return undefined;
+      }
+
+      const pattern = line.slice(0, separatorIndex).trim();
+      const response = line.slice(separatorIndex + separatorLength).trim();
+      if (!pattern || !response) {
+        return undefined;
+      }
+
+      return {
+        id: `${index}:${pattern}`,
+        label: pattern,
+        response,
+        regex: regexFromTriggerPattern(pattern)
+      };
+    })
+    .filter((rule): rule is ParsedTriggerRule => Boolean(rule));
+}
+
+function resetTriggerStateForSession(tab: TerminalTab) {
+  if (tab.triggerSessionId === tab.sessionId) {
+    return;
+  }
+  tab.triggerSessionId = tab.sessionId;
+  tab.triggerBuffer = "";
+  tab.firedTriggerRules = new Set();
+}
+
+function triggerMatches(rule: ParsedTriggerRule, buffer: string) {
+  if (rule.regex) {
+    rule.regex.lastIndex = 0;
+    return rule.regex.test(buffer);
+  }
+  return buffer.includes(rule.label);
+}
+
+function handleLoginTriggers(tab: TerminalTab, data: string) {
+  if (!tab.sessionId || tab.status !== "connected") {
+    return;
+  }
+
+  const rules = parseTriggerRules(tab.profile.triggerRules);
+  if (rules.length === 0) {
+    return;
+  }
+
+  resetTriggerStateForSession(tab);
+  tab.triggerBuffer = `${tab.triggerBuffer}${data}`.slice(-8192);
+
+  for (const rule of rules) {
+    if (tab.firedTriggerRules.has(rule.id) || !triggerMatches(rule, tab.triggerBuffer)) {
+      continue;
+    }
+
+    tab.firedTriggerRules.add(rule.id);
+    window.xshellBridge.sendData({
+      sessionId: tab.sessionId,
+      data: appendEnter(
+        decodeAutomationEscapes(expandAutomationVariables(rule.response, tab.profile))
+      )
+    });
+  }
 }
 
 function visibleTerminalTabs() {
@@ -2207,6 +2387,8 @@ function buildTerminal(profile: SshProfile): TerminalTab {
     searchAddon,
     element,
     reconnectAttempts: 0,
+    triggerBuffer: "",
+    firedTriggerRules: new Set(),
     status: "idle"
   };
 
@@ -2266,6 +2448,10 @@ async function connectTab(tab: TerminalTab, profile: SshProfile, proxyProfile?: 
   tab.sessionId = undefined;
   tab.logFilePath = undefined;
   tab.autoStartedSessionId = undefined;
+  tab.loginScriptSessionId = undefined;
+  tab.triggerSessionId = undefined;
+  tab.triggerBuffer = "";
+  tab.firedTriggerRules = new Set();
   renderTabs();
 
   tab.terminal.writeln(`\x1b[36m连接 ${profile.username}@${profile.host}:${profile.port} ...\x1b[0m`);
@@ -2505,6 +2691,8 @@ function openConnectionDialog(profile?: SshProfile, options?: { quick?: boolean 
   elements.profileKeepaliveInterval.value = String(normalizedProfile?.keepaliveInterval ?? 15);
   elements.profileAutoReconnect.checked = Boolean(normalizedProfile?.autoReconnect);
   elements.profileReconnectLimit.value = String(normalizedProfile?.reconnectLimit ?? 3);
+  elements.profileLoginScript.value = normalizedProfile?.loginScript ?? "";
+  elements.profileTriggerRules.value = normalizedProfile?.triggerRules ?? "";
   elements.profileSave.checked = !options?.quick;
 
   const authMethod = normalizedProfile?.authMethod ?? "password";
@@ -2570,7 +2758,9 @@ function readProfileForm(): SshProfile {
     proxy,
     keepaliveInterval,
     autoReconnect: elements.profileAutoReconnect.checked,
-    reconnectLimit
+    reconnectLimit,
+    loginScript: elements.profileLoginScript.value.trim(),
+    triggerRules: elements.profileTriggerRules.value.trim()
   };
 }
 
@@ -2957,6 +3147,7 @@ function syncTunnelForm() {
       elements.tunnelBindPort.value = "8080";
     }
   }
+  renderTunnelCheckResult(undefined);
 }
 
 function tunnelTypeText(type: TunnelType) {
@@ -2989,6 +3180,22 @@ function renderTunnelRoute(tunnel: TunnelInfo) {
     return `${tunnel.remoteHost}:${tunnel.remotePort} -> ${tunnel.targetHost}:${tunnel.targetPort}`;
   }
   return `${tunnel.localHost}:${tunnel.localPort} -> ${tunnel.targetHost}:${tunnel.targetPort}`;
+}
+
+function renderTunnelCheckResult(response?: TunnelCheckResponse, pendingMessage?: string) {
+  elements.tunnelCheckResult.classList.remove("success", "error");
+  if (!response) {
+    elements.tunnelCheckResult.textContent = pendingMessage ?? "未检查";
+    return;
+  }
+
+  elements.tunnelCheckResult.classList.add(response.ok ? "success" : "error");
+  elements.tunnelCheckResult.innerHTML = `
+    <strong>${escapeHtml(response.message)}</strong>
+    ${response.checks
+      .map((check) => `${escapeHtml(check.label)}：${escapeHtml(check.message)}`)
+      .join("<br />")}
+  `;
 }
 
 function renderTunnels() {
@@ -3025,7 +3232,10 @@ function renderTunnels() {
               ${tunnel.connections} 个连接 · ↑ ${formatBytes(tunnel.bytesUp)} · ↓ ${formatBytes(tunnel.bytesDown)}${errorText}
             </div>
           </div>
-          <button class="tunnel-stop" type="button" data-action="stop-tunnel">停止</button>
+          <div class="tunnel-actions">
+            <button class="tunnel-stop" type="button" data-action="check-tunnel">检查</button>
+            <button class="tunnel-stop danger" type="button" data-action="stop-tunnel">停止</button>
+          </div>
         </article>
       `;
     })
@@ -3090,6 +3300,7 @@ function renderSavedTunnels() {
             <div class="tunnel-route">${escapeHtml(savedTunnelRoute(tunnel))}</div>
           </div>
           <div class="tunnel-actions">
+            <button class="tunnel-stop" type="button" data-action="check-saved-tunnel">检查</button>
             <button class="tunnel-stop" type="button" data-action="start-saved-tunnel">启动</button>
             <button class="tunnel-stop" type="button" data-action="toggle-saved-tunnel">${tunnel.autoStart ? "手动" : "自动"}</button>
             <button class="tunnel-stop danger" type="button" data-action="delete-saved-tunnel">删除</button>
@@ -3247,6 +3458,7 @@ async function openTunnelsPanel() {
   elements.tunnelSaveProfile.disabled = !canSaveTunnel;
   elements.tunnelAutoStart.disabled = !canSaveTunnel;
   syncTunnelForm();
+  renderTunnelCheckResult(undefined);
   if (!elements.tunnelDialog.open) {
     elements.tunnelDialog.showModal();
   }
@@ -3293,6 +3505,37 @@ function readTunnelRequest(): TunnelCreateRequest {
   return request;
 }
 
+async function checkTunnelRequest(request: TunnelCheckRequest, label = "隧道") {
+  try {
+    renderTunnelCheckResult(undefined, `正在检查${label}`);
+    const response = await window.xshellBridge.tunnelCheck(request);
+    renderTunnelCheckResult(response);
+    showToast(response.message);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    renderTunnelCheckResult({
+      ok: false,
+      message,
+      checks: [{ label, status: "error", message }]
+    });
+    showToast(message);
+  }
+}
+
+async function checkTunnelFromForm() {
+  try {
+    await checkTunnelRequest(readTunnelRequest(), "当前配置");
+  } catch (error) {
+    const message = getErrorMessage(error);
+    renderTunnelCheckResult({
+      ok: false,
+      message,
+      checks: [{ label: "当前配置", status: "error", message }]
+    });
+    showToast(message);
+  }
+}
+
 async function createTunnelFromForm() {
   try {
     const request = readTunnelRequest();
@@ -3309,6 +3552,32 @@ async function createTunnelFromForm() {
   } catch (error) {
     showToast(`创建隧道失败：${getErrorMessage(error)}`);
   }
+}
+
+async function checkRunningTunnel(tunnelId: string) {
+  if (!tunnelState.sessionId || !tunnelId) {
+    return;
+  }
+
+  await checkTunnelRequest(
+    {
+      sessionId: tunnelState.sessionId,
+      tunnelId
+    },
+    "运行中隧道"
+  );
+}
+
+async function checkSavedTunnel(tunnel: SavedTunnelConfig) {
+  if (!tunnelState.sessionId) {
+    showToast("当前 SSH 会话不可用");
+    return;
+  }
+
+  await checkTunnelRequest(
+    tunnelCreateRequestFromSaved(tunnelState.sessionId, tunnel),
+    "已保存隧道"
+  );
 }
 
 async function stopTunnel(tunnelId: string) {
@@ -4578,6 +4847,64 @@ async function renameRemoteSelected(entry?: FileListEntry) {
   }
 }
 
+function defaultRemoteMode(entry: FileListEntry) {
+  if (entry.permissions) {
+    return entry.permissions;
+  }
+  return entry.kind === "directory" ? "755" : "644";
+}
+
+function normalizeModeInput(value: string) {
+  const mode = value.trim();
+  return /^[0-7]{3,4}$/.test(mode) ? mode : undefined;
+}
+
+async function chmodRemoteSelected(entry?: FileListEntry) {
+  const selectedItems = entry ? [entry] : getSelectedFiles("remote");
+  if (!sftpState.sessionId || selectedItems.length === 0) {
+    showToast("请选择一个或多个远端项目");
+    return;
+  }
+
+  const initialMode = selectedItems.length === 1 ? defaultRemoteMode(selectedItems[0]) : "";
+  const rawMode = await requestSftpInput("修改远端权限", "八进制权限", initialMode);
+  if (rawMode === undefined) {
+    return;
+  }
+
+  const mode = normalizeModeInput(rawMode);
+  if (!mode) {
+    showToast("权限必须是 3 或 4 位八进制数字");
+    return;
+  }
+
+  try {
+    setSftpStatus(
+      selectedItems.length === 1
+        ? `正在修改 ${selectedItems[0].name} 权限`
+        : `正在修改 ${selectedItems.length} 个远端项目权限`
+    );
+    await window.xshellBridge.sftpChmod({
+      sessionId: sftpState.sessionId,
+      mode,
+      items: selectedItems.map((item) => ({
+        path: item.path,
+        kind: item.kind
+      }))
+    });
+    await loadRemoteDirectory();
+    setSftpStatus(
+      selectedItems.length === 1
+        ? `远端权限已修改为 ${mode}`
+        : `已修改 ${selectedItems.length} 个远端项目权限为 ${mode}`
+    );
+  } catch (error) {
+    const message = getErrorMessage(error);
+    setSftpStatus(message);
+    showToast(message);
+  }
+}
+
 async function deleteRemoteSelected() {
   const selectedItems = getSelectedFiles("remote");
   if (!sftpState.sessionId || selectedItems.length === 0) {
@@ -4869,6 +5196,7 @@ function wireEvents() {
       elements.tunnelAutoStart.disabled = !elements.tunnelSaveProfile.checked;
     }
   });
+  elements.tunnelCheck.addEventListener("click", () => void checkTunnelFromForm());
   elements.tunnelForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void createTunnelFromForm();
@@ -4878,6 +5206,9 @@ function wireEvents() {
     const row = target.closest<HTMLElement>(".tunnel-row");
     const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
     if (!row || action !== "stop-tunnel") {
+      if (row && action === "check-tunnel") {
+        void checkRunningTunnel(row.dataset.tunnelId ?? "");
+      }
       return;
     }
     void stopTunnel(row.dataset.tunnelId ?? "");
@@ -4900,6 +5231,11 @@ function wireEvents() {
 
     if (action === "start-saved-tunnel") {
       void startSavedTunnel(tunnel);
+      return;
+    }
+
+    if (action === "check-saved-tunnel") {
+      void checkSavedTunnel(tunnel);
       return;
     }
 
@@ -4941,6 +5277,7 @@ function wireEvents() {
   $("#local-delete").addEventListener("click", () => void deleteLocalSelected());
   $("#remote-mkdir").addEventListener("click", () => void createRemoteDirectory());
   $("#remote-rename").addEventListener("click", () => void renameRemoteSelected());
+  elements.sftpRemoteChmod.addEventListener("click", () => void chmodRemoteSelected());
   $("#remote-preview").addEventListener("click", () => void previewRemoteFile());
   $("#remote-edit").addEventListener("click", () => void editRemoteFile());
   $("#remote-delete").addEventListener("click", () => void deleteRemoteSelected());
@@ -5218,6 +5555,11 @@ function wireEvents() {
       return;
     }
 
+    if (action === "chmod") {
+      void chmodRemoteSelected(entry);
+      return;
+    }
+
     if (action === "preview") {
       void previewRemoteFile(entry);
       return;
@@ -5309,7 +5651,11 @@ function wireEvents() {
 
   window.xshellBridge.onData(({ sessionId, data }) => {
     const tab = tabs.find((item) => item.sessionId === sessionId);
-    tab?.terminal.write(data);
+    if (!tab) {
+      return;
+    }
+    tab.terminal.write(data);
+    handleLoginTriggers(tab, data);
   });
 
   window.xshellBridge.onStatus(({ sessionId, status, message }) => {
@@ -5326,6 +5672,7 @@ function wireEvents() {
       tab.terminal.writeln(`\x1b[32m${message}\x1b[0m`);
       void startTerminalLogging(tab);
       void autoStartProfileTunnels(tab);
+      void runLoginScript(tab);
     }
     if (status === "error") {
       clearTerminalLogging(tab);
