@@ -14,7 +14,11 @@ import type {
   KnownHostEntry,
   SavedTunnelConfig,
   SftpConflictPolicy,
+  SftpEditOpenResponse,
+  SftpEditStatus,
+  SftpEditStatusEvent,
   SshProfile,
+  SshProxyType,
   TunnelCreateRequest,
   TunnelInfo,
   TunnelType,
@@ -36,6 +40,9 @@ interface TerminalTab {
   sessionId?: string;
   logFilePath?: string;
   autoStartedSessionId?: string;
+  manualDisconnect?: boolean;
+  reconnectAttempts: number;
+  reconnectTimer?: number;
   status: "idle" | "connecting" | "connected" | "disconnected" | "error";
 }
 
@@ -104,6 +111,12 @@ interface QuickCommand {
   command: string;
 }
 
+interface RemoteEditItem extends SftpEditOpenResponse {
+  status: SftpEditStatus;
+  message: string;
+  savedAt?: string;
+}
+
 const PROFILE_STORAGE_KEY = "xshell-ng.profiles.v1";
 const PREF_STORAGE_KEY = "xshell-ng.preferences.v1";
 const QUICK_COMMAND_STORAGE_KEY = "xshell-ng.quickCommands.v1";
@@ -169,6 +182,16 @@ const elements = {
   profileKeyPath: $("#profile-key-path") as HTMLInputElement,
   profilePassphrase: $("#profile-passphrase") as HTMLInputElement,
   profileSave: $("#profile-save") as HTMLInputElement,
+  profileProxyType: $("#profile-proxy-type") as HTMLSelectElement,
+  profileJumpProfile: $("#profile-jump-profile") as HTMLSelectElement,
+  profileJumpProfileRow: $("#profile-jump-profile-row"),
+  profileProxyHost: $("#profile-proxy-host") as HTMLInputElement,
+  profileProxyPort: $("#profile-proxy-port") as HTMLInputElement,
+  profileProxyHostRow: $("#profile-proxy-host-row"),
+  profileProxyPortRow: $("#profile-proxy-port-row"),
+  profileKeepaliveInterval: $("#profile-keepalive-interval") as HTMLInputElement,
+  profileAutoReconnect: $("#profile-auto-reconnect") as HTMLInputElement,
+  profileReconnectLimit: $("#profile-reconnect-limit") as HTMLInputElement,
   passwordFields: $("#password-fields"),
   keyFields: $("#key-fields"),
   prefFontSize: $("#pref-font-size") as HTMLInputElement,
@@ -219,6 +242,8 @@ const elements = {
   sftpProgressDetail: $("#sftp-progress-detail"),
   sftpQueueSummary: $("#sftp-queue-summary"),
   sftpTransferQueue: $("#sftp-transfer-queue"),
+  sftpEditSummary: $("#sftp-edit-summary"),
+  sftpEditList: $("#sftp-edit-list"),
   sftpInputOverlay: $("#sftp-input-overlay"),
   sftpInputForm: $("#sftp-input-form") as HTMLFormElement,
   sftpInputTitle: $("#sftp-input-title"),
@@ -241,6 +266,7 @@ let pendingSftpInput: ((value: string | undefined) => void) | undefined;
 let isTerminalSearchOpen = false;
 let activeSftpTransferId: string | undefined;
 let sftpTransferQueue: SftpTransferQueueItem[] = [];
+let remoteEditSessions: RemoteEditItem[] = [];
 let tunnelState: { sessionId?: string; profileId?: string; tunnels: TunnelInfo[] } = {
   tunnels: []
 };
@@ -621,6 +647,54 @@ function isTunnelType(value: unknown): value is TunnelType {
   return value === "local" || value === "remote" || value === "dynamic";
 }
 
+function isProxyType(value: unknown): value is SshProxyType {
+  return value === "jump" || value === "socks5" || value === "http";
+}
+
+function normalizePort(value: unknown, fallback?: number) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback;
+}
+
+function normalizeKeepaliveInterval(value: unknown) {
+  const seconds = Number(value);
+  return Number.isInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds : 15;
+}
+
+function normalizeReconnectLimit(value: unknown) {
+  const limit = Number(value);
+  return Number.isInteger(limit) && limit >= 1 && limit <= 20 ? limit : 3;
+}
+
+function normalizeProxyConfig(value: unknown): SshProfile["proxy"] {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as NonNullable<SshProfile["proxy"]>;
+  if (!isProxyType(candidate.type)) {
+    return undefined;
+  }
+
+  if (candidate.type === "jump") {
+    return typeof candidate.jumpProfileId === "string" && candidate.jumpProfileId
+      ? {
+          type: "jump",
+          jumpProfileId: candidate.jumpProfileId
+        }
+      : undefined;
+  }
+
+  const port = normalizePort(candidate.port, candidate.type === "socks5" ? 1080 : 8080);
+  return typeof candidate.host === "string" && candidate.host.trim() && port
+    ? {
+        type: candidate.type,
+        host: candidate.host.trim(),
+        port
+      }
+    : undefined;
+}
+
 function defaultTunnelName(type: TunnelType) {
   return {
     local: "本地转发",
@@ -670,6 +744,10 @@ function normalizeSavedTunnel(value: unknown): SavedTunnelConfig | undefined {
 function normalizeProfile(profile: SshProfile): SshProfile {
   return {
     ...profile,
+    proxy: normalizeProxyConfig(profile.proxy),
+    keepaliveInterval: normalizeKeepaliveInterval(profile.keepaliveInterval),
+    autoReconnect: Boolean(profile.autoReconnect),
+    reconnectLimit: normalizeReconnectLimit(profile.reconnectLimit),
     tunnels: Array.isArray(profile.tunnels)
       ? profile.tunnels
           .map(normalizeSavedTunnel)
@@ -780,6 +858,20 @@ async function profileWithStoredPassword(profile: SshProfile) {
     key: passwordSecretKey(profile.id)
   });
   return password ? { ...profile, password } : profile;
+}
+
+async function resolveConnectProfiles(profile: SshProfile) {
+  const connectionProfile = await profileWithStoredPassword(normalizeProfile(profile));
+  const proxy = connectionProfile.proxy;
+  if (proxy?.type !== "jump" || !proxy.jumpProfileId) {
+    return { profile: connectionProfile };
+  }
+
+  const jumpProfile = profiles.find((item) => item.id === proxy.jumpProfileId);
+  return {
+    profile: connectionProfile,
+    proxyProfile: jumpProfile ? await profileWithStoredPassword(jumpProfile) : undefined
+  };
 }
 
 function setStatus(message: string) {
@@ -1009,7 +1101,7 @@ function renderFilePane(side: "local" | "remote") {
   listElement.innerHTML = pane.entries
     .map(
       (entry) => `
-        <div class="file-row ${selectedPaths.has(entry.path) ? "selected" : ""}" role="button" tabindex="0" data-side="${side}" data-path="${escapeHtml(entry.path)}">
+        <div class="file-row ${selectedPaths.has(entry.path) ? "selected" : ""}" role="button" tabindex="0" draggable="true" data-side="${side}" data-path="${escapeHtml(entry.path)}">
           <span class="file-name">
             <i data-lucide="${fileIcon(entry.kind)}"></i>
             <span>${escapeHtml(entry.name)}</span>
@@ -1017,6 +1109,13 @@ function renderFilePane(side: "local" | "remote") {
           <span class="file-size">${formatBytes(entry.size, entry.kind)}</span>
           <span class="file-date">${formatDate(entry.modifiedAt)}</span>
           <span class="file-actions">
+            ${
+              side === "remote" && entry.kind === "file"
+                ? `<button class="file-inline-action" type="button" data-action="edit" title="编辑远端文件">
+                    <i data-lucide="file-pen-line"></i>
+                  </button>`
+                : ""
+            }
             <button class="file-inline-action" type="button" data-action="rename" title="重命名">
               <i data-lucide="square-pen"></i>
             </button>
@@ -1524,6 +1623,7 @@ function buildTerminal(profile: SshProfile): TerminalTab {
     fitAddon,
     searchAddon,
     element,
+    reconnectAttempts: 0,
     status: "idle"
   };
 
@@ -1550,14 +1650,17 @@ function buildTerminal(profile: SshProfile): TerminalTab {
 
 async function connectProfile(profile: SshProfile) {
   let connectionProfile: SshProfile;
+  let proxyProfile: SshProfile | undefined;
   try {
-    connectionProfile = await profileWithStoredPassword(profile);
+    const resolved = await resolveConnectProfiles(profile);
+    connectionProfile = resolved.profile;
+    proxyProfile = resolved.proxyProfile;
   } catch (error) {
     showToast(getErrorMessage(error));
     connectionProfile = profile;
   }
 
-  const validationError = validateConnectProfile(connectionProfile);
+  const validationError = validateConnectProfile(connectionProfile, proxyProfile);
   if (validationError) {
     showToast(validationError);
     openConnectionDialog(profile, { quick: true });
@@ -1568,10 +1671,13 @@ async function connectProfile(profile: SshProfile) {
   tabs.push(tab);
   activeTabId = tab.id;
   renderTabs();
-  await connectTab(tab, connectionProfile);
+  await connectTab(tab, connectionProfile, proxyProfile);
 }
 
-async function connectTab(tab: TerminalTab, profile: SshProfile) {
+async function connectTab(tab: TerminalTab, profile: SshProfile, proxyProfile?: SshProfile) {
+  window.clearTimeout(tab.reconnectTimer);
+  tab.reconnectTimer = undefined;
+  tab.manualDisconnect = false;
   tab.profile = profile;
   tab.status = "connecting";
   tab.sessionId = undefined;
@@ -1584,6 +1690,7 @@ async function connectTab(tab: TerminalTab, profile: SshProfile) {
   try {
     const response = await window.xshellBridge.connect({
       profile,
+      proxyProfile,
       terminal: {
         cols: tab.terminal.cols,
         rows: tab.terminal.rows
@@ -1596,6 +1703,7 @@ async function connectTab(tab: TerminalTab, profile: SshProfile) {
     tab.status = "error";
     tab.terminal.writeln(`\x1b[31m${getErrorMessage(error)}\x1b[0m`);
     renderTabs();
+    scheduleAutoReconnect(tab, getErrorMessage(error));
   }
 }
 
@@ -1644,30 +1752,45 @@ function openConnectionDialog(profile?: SshProfile, options?: { quick?: boolean 
   editingProfileId = profile?.id;
   elements.dialogTitle.textContent = profile ? "编辑连接配置" : options?.quick ? "快速连接" : "新建连接配置";
   elements.dialogSubtitle.textContent = profile?.host ? `${profile.username}@${profile.host}` : "SSH";
+  const normalizedProfile = profile ? normalizeProfile(profile) : undefined;
 
-  elements.profileName.value = profile?.name ?? "";
-  elements.profileGroup.value = profile?.group ?? "";
-  elements.profileHost.value = profile?.host ?? "";
-  elements.profilePort.value = String(profile?.port ?? 22);
-  elements.profileUsername.value = profile?.username ?? "";
+  elements.profileName.value = normalizedProfile?.name ?? "";
+  elements.profileGroup.value = normalizedProfile?.group ?? "";
+  elements.profileHost.value = normalizedProfile?.host ?? "";
+  elements.profilePort.value = String(normalizedProfile?.port ?? 22);
+  elements.profileUsername.value = normalizedProfile?.username ?? "";
   elements.profilePassword.value = "";
   elements.profilePassword.placeholder =
-    profile?.authMethod === "password" && profile.rememberPassword
+    normalizedProfile?.authMethod === "password" && normalizedProfile.rememberPassword
       ? "已保存密码，留空则继续使用"
       : "";
-  elements.profileRemember.checked = Boolean(profile?.rememberPassword);
-  elements.profileKeyPath.value = profile?.privateKeyPath ?? "";
-  elements.profilePassphrase.value = profile?.passphrase ?? "";
+  elements.profileRemember.checked = Boolean(normalizedProfile?.rememberPassword);
+  elements.profileKeyPath.value = normalizedProfile?.privateKeyPath ?? "";
+  elements.profilePassphrase.value = normalizedProfile?.passphrase ?? "";
+  elements.profileProxyType.value = normalizedProfile?.proxy?.type ?? "none";
+  elements.profileProxyHost.value =
+    normalizedProfile?.proxy?.type === "socks5" || normalizedProfile?.proxy?.type === "http"
+      ? normalizedProfile.proxy.host ?? ""
+      : "";
+  elements.profileProxyPort.value =
+    normalizedProfile?.proxy?.type === "socks5" || normalizedProfile?.proxy?.type === "http"
+      ? String(normalizedProfile.proxy.port ?? (normalizedProfile.proxy.type === "socks5" ? 1080 : 8080))
+      : "1080";
+  elements.profileKeepaliveInterval.value = String(normalizedProfile?.keepaliveInterval ?? 15);
+  elements.profileAutoReconnect.checked = Boolean(normalizedProfile?.autoReconnect);
+  elements.profileReconnectLimit.value = String(normalizedProfile?.reconnectLimit ?? 3);
   elements.profileSave.checked = !options?.quick;
 
-  const authMethod = profile?.authMethod ?? "password";
+  const authMethod = normalizedProfile?.authMethod ?? "password";
   const radio = elements.profileForm.querySelector<HTMLInputElement>(
     `input[name="auth-method"][value="${authMethod}"]`
   );
   if (radio) {
     radio.checked = true;
   }
+  renderJumpProfileOptions(normalizedProfile?.proxy?.jumpProfileId);
   syncAuthPanels();
+  syncConnectionPanels();
 
   elements.connectionDialog.showModal();
   elements.profileHost.focus();
@@ -1687,6 +1810,22 @@ function readProfileForm(): SshProfile {
   const existingProfile = editingProfileId
     ? profiles.find((profile) => profile.id === editingProfileId)
     : undefined;
+  const proxyType = elements.profileProxyType.value;
+  const keepaliveInterval = normalizeKeepaliveInterval(elements.profileKeepaliveInterval.value);
+  const reconnectLimit = normalizeReconnectLimit(elements.profileReconnectLimit.value);
+  const proxy =
+    proxyType === "jump"
+      ? normalizeProxyConfig({
+          type: "jump",
+          jumpProfileId: elements.profileJumpProfile.value
+        })
+      : proxyType === "socks5" || proxyType === "http"
+        ? normalizeProxyConfig({
+            type: proxyType,
+            host: elements.profileProxyHost.value,
+            port: elements.profileProxyPort.value
+          })
+        : undefined;
 
   return {
     id: editingProfileId ?? createId(),
@@ -1701,11 +1840,15 @@ function readProfileForm(): SshProfile {
     privateKeyPath: elements.profileKeyPath.value.trim(),
     passphrase: elements.profilePassphrase.value,
     color: existingProfile?.color ?? profileColor(editingProfileId ?? host),
-    tunnels: existingProfile?.tunnels ?? []
+    tunnels: existingProfile?.tunnels ?? [],
+    proxy,
+    keepaliveInterval,
+    autoReconnect: elements.profileAutoReconnect.checked,
+    reconnectLimit
   };
 }
 
-function validateConnectProfile(profile: SshProfile) {
+function validateConnectProfile(profile: SshProfile, proxyProfile?: SshProfile) {
   if (!profile.host.trim()) {
     return "请输入主机地址";
   }
@@ -1721,7 +1864,47 @@ function validateConnectProfile(profile: SshProfile) {
   if (profile.authMethod === "privateKey" && !profile.privateKeyPath) {
     return "请选择私钥文件";
   }
+  if (profile.proxy?.type === "jump") {
+    if (!profile.proxy.jumpProfileId || !proxyProfile) {
+      return "请选择跳板连接配置";
+    }
+    if (proxyProfile.id === profile.id) {
+      return "跳板配置不能指向自身";
+    }
+    const jumpError = validateBasicSshProfile(proxyProfile, "跳板");
+    if (jumpError) {
+      return jumpError;
+    }
+  }
+  if (profile.proxy?.type === "socks5" || profile.proxy?.type === "http") {
+    if (!profile.proxy.host?.trim()) {
+      return "请输入代理主机";
+    }
+    const proxyPort = Number(profile.proxy.port);
+    if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+      return "代理端口必须在 1 到 65535 之间";
+    }
+  }
 
+  return undefined;
+}
+
+function validateBasicSshProfile(profile: SshProfile, label = "SSH") {
+  if (!profile.host.trim()) {
+    return `请输入${label}主机地址`;
+  }
+  if (!profile.username.trim()) {
+    return `请输入${label}用户名`;
+  }
+  if (!Number.isInteger(profile.port) || profile.port < 1 || profile.port > 65535) {
+    return `${label}端口必须在 1 到 65535 之间`;
+  }
+  if (profile.authMethod === "password" && !profile.password) {
+    return `请输入${label}密码或先保存密码`;
+  }
+  if (profile.authMethod === "privateKey" && !profile.privateKeyPath) {
+    return `请选择${label}私钥文件`;
+  }
   return undefined;
 }
 
@@ -1824,6 +2007,33 @@ async function importProfiles() {
   }
 }
 
+function renderJumpProfileOptions(selectedId?: string) {
+  const candidates = profiles.filter((profile) => profile.id !== editingProfileId);
+  elements.profileJumpProfile.innerHTML = [
+    `<option value="">选择连接配置</option>`,
+    ...candidates.map(
+      (profile) =>
+        `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)} · ${escapeHtml(profile.username)}@${escapeHtml(profile.host)}:${profile.port}</option>`
+    )
+  ].join("");
+  elements.profileJumpProfile.value = selectedId ?? "";
+}
+
+function syncConnectionPanels() {
+  const proxyType = elements.profileProxyType.value;
+  const isJump = proxyType === "jump";
+  const isNetworkProxy = proxyType === "socks5" || proxyType === "http";
+  elements.profileJumpProfileRow.classList.toggle("hidden", !isJump);
+  elements.profileProxyHostRow.classList.toggle("hidden", !isNetworkProxy);
+  elements.profileProxyPortRow.classList.toggle("hidden", !isNetworkProxy);
+  if (proxyType === "socks5" && !elements.profileProxyPort.value) {
+    elements.profileProxyPort.value = "1080";
+  }
+  if (proxyType === "http" && !elements.profileProxyPort.value) {
+    elements.profileProxyPort.value = "8080";
+  }
+}
+
 function syncAuthPanels() {
   const authMethod = elements.profileForm.querySelector<HTMLInputElement>(
     'input[name="auth-method"]:checked'
@@ -1841,8 +2051,10 @@ function closeTab(tabId: string) {
   }
 
   if (tab.sessionId) {
+    tab.manualDisconnect = true;
     void window.xshellBridge.disconnect(tab.sessionId);
   }
+  clearReconnectTimer(tab);
 
   tab.terminal.dispose();
   tab.element.remove();
@@ -1872,13 +2084,53 @@ function duplicateActiveTab() {
   void connectProfile({ ...activeTab.profile, password: activeTab.profile.password ?? "" });
 }
 
+function clearReconnectTimer(tab: TerminalTab) {
+  window.clearTimeout(tab.reconnectTimer);
+  tab.reconnectTimer = undefined;
+}
+
+function scheduleAutoReconnect(tab: TerminalTab, reason: string) {
+  if (tab.manualDisconnect || !tab.profile.autoReconnect || tab.reconnectTimer) {
+    return;
+  }
+
+  const limit = normalizeReconnectLimit(tab.profile.reconnectLimit);
+  if (tab.reconnectAttempts >= limit) {
+    tab.terminal.writeln(`\r\n\x1b[33m自动重连已停止：已达到 ${limit} 次\x1b[0m`);
+    return;
+  }
+
+  tab.reconnectAttempts += 1;
+  const attempt = tab.reconnectAttempts;
+  const delay = Math.min(30000, 3000 + (attempt - 1) * 4000);
+  tab.terminal.writeln(
+    `\r\n\x1b[33m${reason}，${Math.round(delay / 1000)} 秒后自动重连 (${attempt}/${limit})\x1b[0m`
+  );
+  tab.reconnectTimer = window.setTimeout(() => {
+    tab.reconnectTimer = undefined;
+    void reconnectTab(tab, { automatic: true });
+  }, delay);
+}
+
 async function disconnectActiveTab() {
   const activeTab = getActiveTab();
-  if (!activeTab?.sessionId) {
+  if (!activeTab) {
+    showToast("当前标签未连接");
+    return;
+  }
+  if (!activeTab.sessionId) {
+    if (activeTab.reconnectTimer) {
+      activeTab.manualDisconnect = true;
+      clearReconnectTimer(activeTab);
+      showToast("已取消自动重连");
+      return;
+    }
     showToast("当前标签未连接");
     return;
   }
 
+  activeTab.manualDisconnect = true;
+  clearReconnectTimer(activeTab);
   await window.xshellBridge.disconnect(activeTab.sessionId);
   activeTab.sessionId = undefined;
   activeTab.status = "disconnected";
@@ -1892,8 +2144,15 @@ async function reconnectActiveTab() {
     return;
   }
 
-  const profile = await profileWithStoredPassword(activeTab.profile);
-  const validationError = validateConnectProfile(profile);
+  await reconnectTab(activeTab);
+}
+
+async function reconnectTab(activeTab: TerminalTab, options?: { automatic?: boolean }) {
+  if (!options?.automatic) {
+    activeTab.reconnectAttempts = 0;
+  }
+  const { profile, proxyProfile } = await resolveConnectProfiles(activeTab.profile);
+  const validationError = validateConnectProfile(profile, proxyProfile);
   if (validationError) {
     showToast(validationError);
     openConnectionDialog(activeTab.profile, { quick: true });
@@ -1902,6 +2161,8 @@ async function reconnectActiveTab() {
 
   if (activeTab.sessionId) {
     try {
+      activeTab.manualDisconnect = true;
+      clearReconnectTimer(activeTab);
       await window.xshellBridge.disconnect(activeTab.sessionId);
     } catch {
       // The connection may already be gone; continue with reconnect.
@@ -1909,8 +2170,10 @@ async function reconnectActiveTab() {
     activeTab.sessionId = undefined;
   }
 
-  activeTab.terminal.writeln(`\r\n\x1b[36m重新连接 ${profile.username}@${profile.host}:${profile.port} ...\x1b[0m`);
-  await connectTab(activeTab, profile);
+  activeTab.terminal.writeln(
+    `\r\n\x1b[36m${options?.automatic ? "自动重连" : "重新连接"} ${profile.username}@${profile.host}:${profile.port} ...\x1b[0m`
+  );
+  await connectTab(activeTab, profile, proxyProfile);
 }
 
 function applyPreferences() {
@@ -2598,6 +2861,30 @@ function isCancelableTransfer(status: TransferStatus) {
   return status === "queued" || status === "preparing" || status === "running";
 }
 
+function remoteEditStatusLabel(status: SftpEditStatus) {
+  return {
+    opening: "打开",
+    opened: "编辑",
+    saving: "回传",
+    saved: "已保存",
+    error: "失败",
+    closed: "关闭"
+  }[status];
+}
+
+function remoteEditStatusBadgeClass(status: SftpEditStatus) {
+  if (status === "saved" || status === "opened") {
+    return "completed";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  if (status === "closed") {
+    return "canceled";
+  }
+  return "running";
+}
+
 function queueSummaryText() {
   if (sftpTransferQueue.length === 0) {
     return "0 项";
@@ -2608,6 +2895,42 @@ function queueSummaryText() {
   ).length;
   const queuedCount = sftpTransferQueue.filter((item) => item.status === "queued").length;
   return `${sftpTransferQueue.length} 项 · ${runningCount} 运行 · ${queuedCount} 等待`;
+}
+
+function renderRemoteEdits() {
+  elements.sftpEditSummary.textContent = `${remoteEditSessions.length} 项`;
+
+  if (remoteEditSessions.length === 0) {
+    elements.sftpEditList.innerHTML = `
+      <div class="queue-empty">
+        <i data-lucide="file-pen-line"></i>
+        <span>暂无编辑会话</span>
+      </div>
+    `;
+    refreshIcons();
+    return;
+  }
+
+  elements.sftpEditList.innerHTML = remoteEditSessions
+    .map(
+      (item) => `
+        <article class="remote-edit-row ${item.status}" data-edit-id="${escapeHtml(item.editId)}">
+          <span class="queue-badge ${remoteEditStatusBadgeClass(item.status)}">
+            <i data-lucide="file-pen-line"></i>
+            <span>${remoteEditStatusLabel(item.status)}</span>
+          </span>
+          <div class="remote-edit-main">
+            <strong title="${escapeHtml(item.remotePath)}">${escapeHtml(item.name)}</strong>
+            <span title="${escapeHtml(item.message)}">${escapeHtml(item.message)}</span>
+          </div>
+          <button class="icon-button danger" type="button" data-action="close-edit" title="停止监听">
+            <i data-lucide="x"></i>
+          </button>
+        </article>
+      `
+    )
+    .join("");
+  refreshIcons();
 }
 
 function syncSftpFooterFromTransfer(item?: SftpTransferQueueItem) {
@@ -2998,6 +3321,270 @@ function toggleFileSelection(side: "local" | "remote", pathValue: string) {
   renderFilePane(side);
 }
 
+function localNameFromPath(pathValue: string) {
+  return pathValue.split(/[\\/]/).filter(Boolean).at(-1) ?? pathValue;
+}
+
+function enqueueUploadTransfer(localPath: string, remoteDirectory: string, name?: string) {
+  if (!sftpState.sessionId) {
+    showToast("SFTP 通道未建立");
+    return;
+  }
+
+  const itemName = name || localNameFromPath(localPath);
+  const conflictPolicy = getSelectedConflictPolicy();
+  enqueueSftpTransfer({
+    id: createId(),
+    sessionId: sftpState.sessionId,
+    direction: "upload",
+    name: itemName,
+    sourcePath: localPath,
+    targetPath: remoteDirectory,
+    localPath,
+    remoteDirectory,
+    remoteName: itemName,
+    conflictPolicy,
+    status: "queued",
+    percent: 0,
+    message: `等待上传 ${itemName}`,
+    summary: createTransferSummary(),
+    total: createTransferSummary(),
+    createdAt: Date.now()
+  });
+}
+
+function enqueueDownloadTransfer(entry: FileListEntry, localDirectory: string) {
+  if (!sftpState.sessionId) {
+    showToast("SFTP 通道未建立");
+    return;
+  }
+
+  const conflictPolicy = getSelectedConflictPolicy();
+  enqueueSftpTransfer({
+    id: createId(),
+    sessionId: sftpState.sessionId,
+    direction: "download",
+    name: entry.name,
+    sourcePath: entry.path,
+    targetPath: localDirectory,
+    remotePath: entry.path,
+    localDirectory,
+    localName: entry.name,
+    conflictPolicy,
+    status: "queued",
+    percent: 0,
+    message: `等待下载 ${entry.name}`,
+    summary: createTransferSummary(),
+    total: createTransferSummary(),
+    createdAt: Date.now()
+  });
+}
+
+function sftpDragPayload(event: DragEvent) {
+  const raw = event.dataTransfer?.getData("application/x-xshell-ng-sftp");
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      side?: "local" | "remote";
+      paths?: string[];
+    };
+    if (
+      (parsed.side === "local" || parsed.side === "remote") &&
+      Array.isArray(parsed.paths)
+    ) {
+      return parsed;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function localDropDirectory(event: DragEvent) {
+  const row = (event.target as HTMLElement).closest<HTMLElement>(".file-row");
+  const entry = row
+    ? sftpState.local.entries.find((item) => item.path === row.dataset.path)
+    : undefined;
+  return entry?.kind === "directory" ? entry.path : sftpState.local.path;
+}
+
+function remoteDropDirectory(event: DragEvent) {
+  const row = (event.target as HTMLElement).closest<HTMLElement>(".file-row");
+  const entry = row
+    ? sftpState.remote.entries.find((item) => item.path === row.dataset.path)
+    : undefined;
+  return entry?.kind === "directory" ? entry.path : sftpState.remote.path;
+}
+
+function droppedFilePath(file: File) {
+  return window.xshellBridge.dragFilePath(file);
+}
+
+function handleSftpDragStart(event: DragEvent) {
+  const row = (event.target as HTMLElement).closest<HTMLElement>(".file-row");
+  const side = row?.dataset.side === "remote" ? "remote" : row?.dataset.side === "local" ? "local" : undefined;
+  const pathValue = row?.dataset.path;
+  if (!side || !pathValue || !event.dataTransfer) {
+    return;
+  }
+
+  const selected = getSelectedFiles(side);
+  const paths = selected.some((entry) => entry.path === pathValue)
+    ? selected.map((entry) => entry.path)
+    : [pathValue];
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData(
+    "application/x-xshell-ng-sftp",
+    JSON.stringify({ side, paths })
+  );
+  event.dataTransfer.setData("text/plain", paths.join("\n"));
+}
+
+function handleSftpDragOver(event: DragEvent) {
+  if (!event.dataTransfer) {
+    return;
+  }
+  const hasInternalPayload = event.dataTransfer.types.includes("application/x-xshell-ng-sftp");
+  const hasExternalFiles = event.dataTransfer.types.includes("Files");
+  if (!hasInternalPayload && !hasExternalFiles) {
+    return;
+  }
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  (event.currentTarget as HTMLElement).classList.add("drop-target");
+}
+
+function handleSftpDragLeave(event: DragEvent) {
+  (event.currentTarget as HTMLElement).classList.remove("drop-target");
+}
+
+function handleSftpDropOnRemote(event: DragEvent) {
+  event.preventDefault();
+  (event.currentTarget as HTMLElement).classList.remove("drop-target");
+  const targetDirectory = remoteDropDirectory(event);
+  const payload = sftpDragPayload(event);
+  if (payload?.side === "local" && payload.paths) {
+    const entries = payload.paths
+      .map((pathValue) => sftpState.local.entries.find((entry) => entry.path === pathValue))
+      .filter((entry): entry is FileListEntry => Boolean(entry));
+    for (const entry of entries) {
+      enqueueUploadTransfer(entry.path, targetDirectory, entry.name);
+    }
+    setSftpStatus(`已加入上传队列：${entries.length} 个本地项目`);
+    return;
+  }
+
+  const files = Array.from(event.dataTransfer?.files ?? [])
+    .map(droppedFilePath)
+    .filter(Boolean);
+  for (const filePath of files) {
+    enqueueUploadTransfer(filePath, targetDirectory);
+  }
+  if (files.length > 0) {
+    setSftpStatus(`已加入上传队列：${files.length} 个本地项目`);
+  }
+}
+
+function handleSftpDropOnLocal(event: DragEvent) {
+  event.preventDefault();
+  (event.currentTarget as HTMLElement).classList.remove("drop-target");
+  const targetDirectory = localDropDirectory(event);
+  const payload = sftpDragPayload(event);
+  if (payload?.side !== "remote" || !payload.paths) {
+    return;
+  }
+
+  const entries = payload.paths
+    .map((pathValue) => sftpState.remote.entries.find((entry) => entry.path === pathValue))
+    .filter((entry): entry is FileListEntry => Boolean(entry));
+  for (const entry of entries) {
+    enqueueDownloadTransfer(entry, targetDirectory);
+  }
+  setSftpStatus(`已加入下载队列：${entries.length} 个远端项目`);
+}
+
+function upsertRemoteEditSession(item: RemoteEditItem) {
+  const index = remoteEditSessions.findIndex((session) => session.editId === item.editId);
+  if (index >= 0) {
+    remoteEditSessions[index] = item;
+  } else {
+    remoteEditSessions = [item, ...remoteEditSessions];
+  }
+  renderRemoteEdits();
+}
+
+function handleSftpEditStatus(event: SftpEditStatusEvent) {
+  if (event.status === "closed") {
+    remoteEditSessions = remoteEditSessions.filter((item) => item.editId !== event.editId);
+    renderRemoteEdits();
+    setSftpStatus(event.message);
+    return;
+  }
+
+  const existing = remoteEditSessions.find((item) => item.editId === event.editId);
+  upsertRemoteEditSession({
+    editId: event.editId,
+    sessionId: event.sessionId,
+    remotePath: event.remotePath,
+    localPath: event.localPath,
+    name: event.name,
+    openedAt: existing?.openedAt ?? new Date().toISOString(),
+    status: event.status,
+    message: event.message,
+    savedAt: event.savedAt
+  });
+  setSftpStatus(event.message);
+  if (event.status === "saved" && event.sessionId === sftpState.sessionId) {
+    void loadRemoteDirectory();
+  }
+  if (event.status === "error") {
+    showToast(event.message);
+  }
+}
+
+async function editRemoteFile(entry?: FileListEntry) {
+  const selected = entry ?? getSelectedFile("remote");
+  if (!sftpState.sessionId || !selected) {
+    showToast("请选择一个远端文件");
+    return;
+  }
+  if (selected.kind !== "file") {
+    showToast("只能编辑远端文件");
+    return;
+  }
+
+  try {
+    setSftpStatus(`正在打开远端文件：${selected.name}`);
+    const response = await window.xshellBridge.sftpEditOpen({
+      sessionId: sftpState.sessionId,
+      remotePath: selected.path,
+      name: selected.name
+    });
+    upsertRemoteEditSession({
+      ...response,
+      status: "opened",
+      message: `已打开 ${response.name}`
+    });
+    setSftpStatus(`已打开远端文件：${selected.name}`);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    setSftpStatus(message);
+    showToast(message);
+  }
+}
+
+async function closeRemoteEdit(editId: string) {
+  try {
+    await window.xshellBridge.sftpEditClose({ editId });
+  } catch (error) {
+    showToast(`关闭远端编辑失败：${getErrorMessage(error)}`);
+  }
+}
+
 async function uploadSelectedEntry() {
   const selected = getSelectedFile("local");
   if (!sftpState.sessionId || !selected) {
@@ -3005,26 +3592,8 @@ async function uploadSelectedEntry() {
     return;
   }
 
-  const transferId = createId();
   const conflictPolicy = getSelectedConflictPolicy();
-  enqueueSftpTransfer({
-    id: transferId,
-    sessionId: sftpState.sessionId,
-    direction: "upload",
-    name: selected.name,
-    sourcePath: selected.path,
-    targetPath: sftpState.remote.path,
-    localPath: selected.path,
-    remoteDirectory: sftpState.remote.path,
-    remoteName: selected.name,
-    conflictPolicy,
-    status: "queued",
-    percent: 0,
-    message: `等待上传 ${selected.name}`,
-    summary: createTransferSummary(),
-    total: createTransferSummary(),
-    createdAt: Date.now()
-  });
+  enqueueUploadTransfer(selected.path, sftpState.remote.path, selected.name);
   setSftpStatus(`已加入上传队列：${selected.name} · ${conflictPolicyLabel(conflictPolicy)}`);
 }
 
@@ -3037,25 +3606,7 @@ async function downloadSelectedEntry() {
 
   const conflictPolicy = getSelectedConflictPolicy();
   for (const selected of selectedItems) {
-    const transferId = createId();
-    enqueueSftpTransfer({
-      id: transferId,
-      sessionId: sftpState.sessionId,
-      direction: "download",
-      name: selected.name,
-      sourcePath: selected.path,
-      targetPath: sftpState.local.path,
-      remotePath: selected.path,
-      localDirectory: sftpState.local.path,
-      localName: selected.name,
-      conflictPolicy,
-      status: "queued",
-      percent: 0,
-      message: `等待下载 ${selected.name}`,
-      summary: createTransferSummary(),
-      total: createTransferSummary(),
-      createdAt: Date.now()
-    });
+    enqueueDownloadTransfer(selected, sftpState.local.path);
   }
 
   setSftpStatus(
@@ -3517,6 +4068,7 @@ function wireEvents() {
   $("#local-delete").addEventListener("click", () => void deleteLocalSelected());
   $("#remote-mkdir").addEventListener("click", () => void createRemoteDirectory());
   $("#remote-rename").addEventListener("click", () => void renameRemoteSelected());
+  $("#remote-edit").addEventListener("click", () => void editRemoteFile());
   $("#remote-delete").addEventListener("click", () => void deleteRemoteSelected());
   $("#sftp-upload").addEventListener("click", () => void uploadSelectedEntry());
   $("#sftp-download").addEventListener("click", () => void downloadSelectedEntry());
@@ -3556,6 +4108,15 @@ function wireEvents() {
 
     void cancelSftpTransfer(row.dataset.transferId ?? "");
   });
+  elements.sftpEditList.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>(".remote-edit-row");
+    const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+    if (!row?.dataset.editId || action !== "close-edit") {
+      return;
+    }
+    void closeRemoteEdit(row.dataset.editId);
+  });
   elements.terminalSearchQuery.addEventListener("input", () =>
     searchActiveTerminal("next", true, true)
   );
@@ -3580,6 +4141,14 @@ function wireEvents() {
       closeSftpInput();
     }
   });
+  elements.sftpLocalList.addEventListener("dragstart", handleSftpDragStart);
+  elements.sftpRemoteList.addEventListener("dragstart", handleSftpDragStart);
+  elements.sftpLocalList.addEventListener("dragover", handleSftpDragOver);
+  elements.sftpRemoteList.addEventListener("dragover", handleSftpDragOver);
+  elements.sftpLocalList.addEventListener("dragleave", handleSftpDragLeave);
+  elements.sftpRemoteList.addEventListener("dragleave", handleSftpDragLeave);
+  elements.sftpLocalList.addEventListener("drop", handleSftpDropOnLocal);
+  elements.sftpRemoteList.addEventListener("drop", handleSftpDropOnRemote);
   elements.sftpLocalPath.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       void loadLocalDirectory(elements.sftpLocalPath.value);
@@ -3594,6 +4163,9 @@ function wireEvents() {
     const target = event.target as HTMLElement;
     if (target.matches('input[name="auth-method"]')) {
       syncAuthPanels();
+    }
+    if (target === elements.profileProxyType) {
+      syncConnectionPanels();
     }
   });
 
@@ -3761,6 +4333,11 @@ function wireEvents() {
       return;
     }
 
+    if (action === "edit") {
+      void editRemoteFile(entry);
+      return;
+    }
+
     if (event.detail >= 2 && entry?.kind === "directory") {
       void loadRemoteDirectory(entry.path);
     }
@@ -3835,6 +4412,9 @@ function wireEvents() {
 
     tab.status = status;
     if (status === "connected") {
+      tab.manualDisconnect = false;
+      tab.reconnectAttempts = 0;
+      clearReconnectTimer(tab);
       tab.terminal.writeln(`\x1b[32m${message}\x1b[0m`);
       void startTerminalLogging(tab);
       void autoStartProfileTunnels(tab);
@@ -3844,11 +4424,13 @@ function wireEvents() {
       tab.sessionId = undefined;
       tab.terminal.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
       showToast(message);
+      scheduleAutoReconnect(tab, message);
     }
     if (status === "disconnected") {
       clearTerminalLogging(tab);
       tab.sessionId = undefined;
       tab.terminal.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
+      scheduleAutoReconnect(tab, message);
     }
     if (status !== "connected" && tunnelState.sessionId === sessionId) {
       tunnelState.tunnels = [];
@@ -3861,6 +4443,7 @@ function wireEvents() {
   });
 
   window.xshellBridge.onTransferProgress(renderTransferProgress);
+  window.xshellBridge.onSftpEditStatus(handleSftpEditStatus);
   window.xshellBridge.onTunnelsChanged(({ sessionId, tunnels }) => {
     if (tunnelState.sessionId !== sessionId) {
       return;

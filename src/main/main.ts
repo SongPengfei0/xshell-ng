@@ -6,6 +6,7 @@ import {
   ipcMain,
   Menu,
   safeStorage,
+  shell,
   type WebContents
 } from "electron";
 import fs from "node:fs";
@@ -13,6 +14,7 @@ import net from "node:net";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import {
   Client,
   type ClientChannel,
@@ -46,6 +48,10 @@ import type {
   SftpCancelTransferRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
+  SftpEditCloseRequest,
+  SftpEditOpenRequest,
+  SftpEditOpenResponse,
+  SftpEditStatusEvent,
   SftpConflictPolicy,
   SftpListRequest,
   SftpMkdirRequest,
@@ -72,6 +78,8 @@ interface SshRuntime {
   client: Client;
   stream?: ClientChannel;
   sftp?: SFTPWrapper;
+  proxyClient?: Client;
+  proxySocket?: Readable & Writable;
   window: BrowserWindow;
   tunnels: Map<string, TunnelRuntime>;
 }
@@ -82,9 +90,26 @@ interface TunnelRuntime extends TunnelInfo {
   channels: Set<ClientChannel>;
 }
 
+interface RemoteEditSession {
+  editId: string;
+  sessionId: string;
+  remotePath: string;
+  localPath: string;
+  directoryPath: string;
+  localName: string;
+  name: string;
+  window: BrowserWindow;
+  watcher?: fs.FSWatcher;
+  saveTimer?: NodeJS.Timeout;
+  saving: boolean;
+  pendingSave: boolean;
+  lastSavedMtimeMs: number;
+}
+
 const sessions = new Map<string, SshRuntime>();
 const activeTransfers = new Map<string, TransferContext>();
 const terminalLogs = new Map<string, fs.WriteStream>();
+const remoteEditSessions = new Map<string, RemoteEditSession>();
 
 const isDevelopment = !app.isPackaged;
 const secretStoreFileName = "secure-secrets.json";
@@ -251,6 +276,13 @@ const destroyTunnelConnections = (tunnel: TunnelRuntime) => {
   }
   tunnel.sockets.clear();
   tunnel.channels.clear();
+};
+
+const closeProxyResources = (runtime: SshRuntime) => {
+  runtime.proxySocket?.destroy();
+  runtime.proxyClient?.end();
+  runtime.proxySocket = undefined;
+  runtime.proxyClient = undefined;
 };
 
 const bindTunnelStreams = (
@@ -914,6 +946,50 @@ const sanitizeProfileForExport = (profile: ProfileExportRequest["profiles"][numb
   rememberPassword: false
 });
 
+const coercePort = (value: unknown, fallback: number) => {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback;
+};
+
+const coerceKeepaliveInterval = (value: unknown) => {
+  const seconds = Number(value);
+  return Number.isInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds : 15;
+};
+
+const coerceReconnectLimit = (value: unknown) => {
+  const limit = Number(value);
+  return Number.isInteger(limit) && limit >= 1 && limit <= 20 ? limit : 3;
+};
+
+const coerceProxyConfig = (
+  value: unknown
+): ProfileExportRequest["profiles"][number]["proxy"] => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as NonNullable<ProfileExportRequest["profiles"][number]["proxy"]>;
+  if (candidate.type === "jump") {
+    return typeof candidate.jumpProfileId === "string" && candidate.jumpProfileId
+      ? {
+          type: "jump",
+          jumpProfileId: candidate.jumpProfileId
+        }
+      : undefined;
+  }
+  if (candidate.type === "socks5" || candidate.type === "http") {
+    const host = typeof candidate.host === "string" ? candidate.host.trim() : "";
+    return host
+      ? {
+          type: candidate.type,
+          host,
+          port: coercePort(candidate.port, candidate.type === "socks5" ? 1080 : 8080)
+        }
+      : undefined;
+  }
+  return undefined;
+};
+
 const coerceSavedTunnel = (value: unknown): SavedTunnelConfig | undefined => {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -985,7 +1061,11 @@ const coerceImportedProfile = (value: unknown): ProfileExportRequest["profiles"]
       ? candidate.tunnels
           .map(coerceSavedTunnel)
           .filter((tunnel): tunnel is SavedTunnelConfig => Boolean(tunnel))
-      : undefined
+      : undefined,
+    proxy: coerceProxyConfig(candidate.proxy),
+    keepaliveInterval: coerceKeepaliveInterval(candidate.keepaliveInterval),
+    autoReconnect: Boolean(candidate.autoReconnect),
+    reconnectLimit: coerceReconnectLimit(candidate.reconnectLimit)
   };
 };
 
@@ -1079,6 +1159,8 @@ const createWindow = () => {
     for (const runtime of sessions.values()) {
       if (runtime.window === win) {
         stopTerminalLog(runtime.id);
+        closeRemoteEditSessionsForSession(runtime.id, "窗口已关闭，远端编辑已停止。");
+        closeProxyResources(runtime);
         runtime.sftp?.end();
         runtime.stream?.destroy();
         runtime.client.end();
@@ -1282,32 +1364,63 @@ const buildMenu = () => {
 };
 
 const validateConnectRequest = (request: ConnectRequest) => {
-  const { profile } = request;
+  const { profile, proxyProfile } = request;
+  validateSshProfile(profile, "SSH");
+  const proxy = profile.proxy;
+  if (proxy?.type === "jump") {
+    if (!proxy.jumpProfileId || !proxyProfile) {
+      throw new Error("请选择跳板连接配置。");
+    }
+    if (proxyProfile.id === profile.id) {
+      throw new Error("跳板配置不能指向自身。");
+    }
+    validateSshProfile(proxyProfile, "跳板");
+  }
+  if (proxy?.type === "socks5" || proxy?.type === "http") {
+    if (!proxy.host?.trim()) {
+      throw new Error("请输入代理主机。");
+    }
+    const proxyPort = Number(proxy.port);
+    if (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+      throw new Error("代理端口必须在 1 到 65535 之间。");
+    }
+  }
+};
+
+const validateSshProfile = (profile: ConnectRequest["profile"], label: string) => {
   if (!profile.host.trim()) {
-    throw new Error("请输入主机地址。");
+    throw new Error(`请输入${label}主机地址。`);
   }
   if (!profile.username.trim()) {
-    throw new Error("请输入用户名。");
+    throw new Error(`请输入${label}用户名。`);
   }
   if (!Number.isInteger(profile.port) || profile.port < 1 || profile.port > 65535) {
-    throw new Error("端口必须在 1 到 65535 之间。");
+    throw new Error(`${label}端口必须在 1 到 65535 之间。`);
   }
   if (profile.authMethod === "password" && !profile.password) {
-    throw new Error("请输入 SSH 密码。");
+    throw new Error(`请输入${label}密码。`);
   }
   if (profile.authMethod === "privateKey" && !profile.privateKeyPath) {
-    throw new Error("请选择私钥文件。");
+    throw new Error(`请选择${label}私钥文件。`);
   }
+};
+
+const keepaliveIntervalMs = (seconds: number | undefined) => {
+  if (!Number.isInteger(seconds) || seconds === undefined) {
+    return 15000;
+  }
+  return seconds <= 0 ? 0 : Math.min(seconds, 300) * 1000;
 };
 
 const toConnectConfig = (request: ConnectRequest, win: BrowserWindow): ConnectConfig => {
   const { profile } = request;
+  const keepaliveInterval = keepaliveIntervalMs(profile.keepaliveInterval);
   const config: ConnectConfig = {
     host: profile.host.trim(),
     port: profile.port,
     username: profile.username.trim(),
     readyTimeout: 20000,
-    keepaliveInterval: 15000,
+    keepaliveInterval,
     keepaliveCountMax: 3,
     tryKeyboard: profile.authMethod === "password",
     hostVerifier: (key: Buffer, verify: VerifyCallback) => {
@@ -1327,6 +1440,273 @@ const toConnectConfig = (request: ConnectRequest, win: BrowserWindow): ConnectCo
   }
 
   return config;
+};
+
+const configureKeyboardAuth = (client: Client, profile: ConnectRequest["profile"]) => {
+  client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+    finish(prompts.map(() => profile.password ?? ""));
+  });
+};
+
+const connectClientReady = (client: Client, config: ConnectConfig) =>
+  new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      client.off("ready", onReady);
+      client.off("error", onError);
+    };
+    const onReady = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    client.once("ready", onReady);
+    client.once("error", onError);
+    client.connect(config);
+  });
+
+const onceSocketData = (socket: net.Socket) =>
+  new Promise<Buffer>((resolve, reject) => {
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (data: Buffer) => {
+      cleanup();
+      resolve(data);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("代理连接已关闭。"));
+    };
+    socket.once("data", onData);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+
+const readSocketUntil = (
+  socket: net.Socket,
+  isComplete: (buffer: Buffer) => boolean
+) =>
+  new Promise<Buffer>((resolve, reject) => {
+    let buffer = Buffer.alloc(0);
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (data: Buffer) => {
+      buffer = Buffer.concat([buffer, data]);
+      if (isComplete(buffer)) {
+        cleanup();
+        resolve(buffer);
+      }
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("代理连接已关闭。"));
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+
+const createTcpSocket = (host: string, port: number) =>
+  new Promise<net.Socket>((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const cleanup = () => {
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      socket.off("timeout", onTimeout);
+    };
+    const onConnect = () => {
+      cleanup();
+      socket.setTimeout(0);
+      resolve(socket);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onTimeout = () => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("代理连接超时。"));
+    };
+    socket.setTimeout(20000);
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    socket.once("timeout", onTimeout);
+  });
+
+const encodeSocksHost = (host: string) => {
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) {
+    return Buffer.concat([
+      Buffer.from([0x01]),
+      Buffer.from(host.split(".").map((part) => Number(part)))
+    ]);
+  }
+  const hostBuffer = Buffer.from(host, "utf8");
+  if (hostBuffer.length > 255) {
+    throw new Error("SOCKS5 代理目标主机名过长。");
+  }
+  return Buffer.concat([Buffer.from([0x03, hostBuffer.length]), hostBuffer]);
+};
+
+const connectSocksProxy = async (
+  proxy: NonNullable<ConnectRequest["profile"]["proxy"]>,
+  targetHost: string,
+  targetPort: number
+) => {
+  if (!proxy.host || !proxy.port) {
+    throw new Error("SOCKS5 代理配置无效。");
+  }
+  const socket = await createTcpSocket(proxy.host, proxy.port);
+  try {
+    socket.write(Buffer.from([0x05, 0x01, 0x00]));
+    const method = await onceSocketData(socket);
+    if (method.length < 2 || method[0] !== 0x05 || method[1] !== 0x00) {
+      throw new Error("SOCKS5 代理不支持免认证连接。");
+    }
+
+    const hostPart = encodeSocksHost(targetHost);
+    const portPart = Buffer.allocUnsafe(2);
+    portPart.writeUInt16BE(targetPort, 0);
+    socket.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00]), hostPart, portPart]));
+    const response = await readSocketUntil(socket, (buffer) => {
+      if (buffer.length < 5) {
+        return false;
+      }
+      const addressLength =
+        buffer[3] === 0x01
+          ? 4
+          : buffer[3] === 0x04
+            ? 16
+            : buffer[3] === 0x03
+              ? buffer[4] + 1
+              : 0;
+      return addressLength > 0 && buffer.length >= 4 + addressLength + 2;
+    });
+    if (response.length < 2 || response[0] !== 0x05 || response[1] !== 0x00) {
+      throw new Error(`SOCKS5 代理连接目标失败，响应码 ${response[1] ?? "未知"}。`);
+    }
+    const addressLength =
+      response[3] === 0x01
+        ? 4
+        : response[3] === 0x04
+          ? 16
+          : response[3] === 0x03
+            ? response[4] + 1
+            : 0;
+    const replyLength = 4 + addressLength + 2;
+    if (response.length > replyLength) {
+      socket.unshift(response.subarray(replyLength));
+    }
+    return socket;
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
+};
+
+const connectHttpProxy = async (
+  proxy: NonNullable<ConnectRequest["profile"]["proxy"]>,
+  targetHost: string,
+  targetPort: number
+) => {
+  if (!proxy.host || !proxy.port) {
+    throw new Error("HTTP 代理配置无效。");
+  }
+  const socket = await createTcpSocket(proxy.host, proxy.port);
+  try {
+    socket.write(
+      [
+        `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
+        `Host: ${targetHost}:${targetPort}`,
+        "Proxy-Connection: Keep-Alive",
+        "",
+        ""
+      ].join("\r\n")
+    );
+    const response = await readSocketUntil(
+      socket,
+      (buffer) => buffer.indexOf("\r\n\r\n") >= 0
+    );
+    const header = response.toString("latin1");
+    if (!/^HTTP\/1\.[01] 2\d\d\b/.test(header)) {
+      throw new Error("HTTP 代理 CONNECT 失败。");
+    }
+    const headerEnd = header.indexOf("\r\n\r\n");
+    if (headerEnd >= 0) {
+      const bodyOffset = headerEnd + 4;
+      if (response.length > bodyOffset) {
+        socket.unshift(response.subarray(bodyOffset));
+      }
+    }
+    return socket;
+  } catch (error) {
+    socket.destroy();
+    throw error;
+  }
+};
+
+const createProxySocket = async (
+  request: ConnectRequest,
+  win: BrowserWindow
+): Promise<{ socket?: Readable & Writable; proxyClient?: Client }> => {
+  const proxy = request.profile.proxy;
+  if (!proxy) {
+    return {};
+  }
+
+  const targetHost = request.profile.host.trim();
+  const targetPort = request.profile.port;
+  if (proxy.type === "jump") {
+    if (!request.proxyProfile) {
+      throw new Error("请选择跳板连接配置。");
+    }
+    const proxyClient = new Client();
+    configureKeyboardAuth(proxyClient, request.proxyProfile);
+    const proxyConfig = toConnectConfig(
+      {
+        profile: request.proxyProfile,
+        terminal: request.terminal
+      },
+      win
+    );
+    await connectClientReady(proxyClient, proxyConfig);
+    proxyClient.on("error", () => undefined);
+    const socket = await forwardOut(
+      proxyClient,
+      "127.0.0.1",
+      0,
+      targetHost,
+      targetPort
+    );
+    return { socket, proxyClient };
+  }
+
+  if (proxy.type === "socks5") {
+    return { socket: await connectSocksProxy(proxy, targetHost, targetPort) };
+  }
+
+  if (proxy.type === "http") {
+    return { socket: await connectHttpProxy(proxy, targetHost, targetPort) };
+  }
+
+  return {};
 };
 
 const sortEntries = (entries: FileListEntry[]) =>
@@ -2183,6 +2563,173 @@ const downloadRemoteEntry = async (
   }
 };
 
+const emitRemoteEditStatus = (
+  session: RemoteEditSession,
+  status: SftpEditStatusEvent["status"],
+  message: string,
+  savedAt?: string
+) => {
+  if (session.window.isDestroyed()) {
+    return;
+  }
+
+  session.window.webContents.send("sftp:edit-status", {
+    editId: session.editId,
+    sessionId: session.sessionId,
+    remotePath: session.remotePath,
+    localPath: session.localPath,
+    name: session.name,
+    status,
+    message,
+    savedAt
+  } satisfies SftpEditStatusEvent);
+};
+
+const downloadRemoteFile = async (
+  sftp: SFTPWrapper,
+  remotePath: string,
+  localPath: string
+) => {
+  await fs.promises.mkdir(path.dirname(localPath), { recursive: true });
+  await pipeline(sftp.createReadStream(remotePath), fs.createWriteStream(localPath));
+};
+
+const uploadEditedFile = async (session: RemoteEditSession) => {
+  if (session.saving) {
+    session.pendingSave = true;
+    return;
+  }
+
+  session.saving = true;
+  session.pendingSave = false;
+  emitRemoteEditStatus(session, "saving", `正在回传 ${session.name}`);
+
+  try {
+    const localStats = await fs.promises.stat(session.localPath);
+    if (localStats.mtimeMs <= session.lastSavedMtimeMs + 2) {
+      return;
+    }
+
+    const sftp = await getSftp(session.sessionId);
+    await pipeline(
+      fs.createReadStream(session.localPath),
+      sftp.createWriteStream(session.remotePath)
+    );
+    session.lastSavedMtimeMs = localStats.mtimeMs;
+    const savedAt = new Date().toISOString();
+    emitRemoteEditStatus(session, "saved", `已回传 ${session.name}`, savedAt);
+  } catch (error) {
+    emitRemoteEditStatus(session, "error", `回传失败：${getErrorMessage(error)}`);
+  } finally {
+    session.saving = false;
+    if (session.pendingSave) {
+      session.pendingSave = false;
+      session.saveTimer = setTimeout(() => {
+        session.saveTimer = undefined;
+        void uploadEditedFile(session);
+      }, 700);
+    }
+  }
+};
+
+const scheduleRemoteEditSave = (editId: string) => {
+  const session = remoteEditSessions.get(editId);
+  if (!session) {
+    return;
+  }
+
+  if (session.saveTimer) {
+    clearTimeout(session.saveTimer);
+  }
+  session.saveTimer = setTimeout(() => {
+    session.saveTimer = undefined;
+    void uploadEditedFile(session);
+  }, 700);
+};
+
+const closeRemoteEditSession = (editId: string, message = "远端编辑已关闭。") => {
+  const session = remoteEditSessions.get(editId);
+  if (!session) {
+    return;
+  }
+
+  if (session.saveTimer) {
+    clearTimeout(session.saveTimer);
+  }
+  session.watcher?.close();
+  remoteEditSessions.delete(editId);
+  emitRemoteEditStatus(session, "closed", message);
+};
+
+const closeRemoteEditSessionsForSession = (sessionId: string, message: string) => {
+  const editIds = [...remoteEditSessions.values()]
+    .filter((session) => session.sessionId === sessionId)
+    .map((session) => session.editId);
+  for (const editId of editIds) {
+    closeRemoteEditSession(editId, message);
+  }
+};
+
+const openRemoteEditSession = async (
+  win: BrowserWindow,
+  request: SftpEditOpenRequest
+): Promise<SftpEditOpenResponse> => {
+  const runtime = getRuntime(request.sessionId);
+  const sftp = await getSftp(request.sessionId);
+  const stats = await sftpLstat(sftp, request.remotePath);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error("只能编辑远端普通文件。");
+  }
+
+  const editId = randomUUID();
+  const remoteName = request.name || path.posix.basename(request.remotePath);
+  const localName = sanitizeFileName(remoteName);
+  const directoryPath = path.join(app.getPath("temp"), "xshell-ng-edits", runtime.id, editId);
+  const localPath = path.join(directoryPath, localName);
+  const openedAt = new Date().toISOString();
+
+  const session: RemoteEditSession = {
+    editId,
+    sessionId: request.sessionId,
+    remotePath: request.remotePath,
+    localPath,
+    directoryPath,
+    localName,
+    name: remoteName,
+    window: win,
+    saving: false,
+    pendingSave: false,
+    lastSavedMtimeMs: 0
+  };
+
+  emitRemoteEditStatus(session, "opening", `正在打开 ${remoteName}`);
+  await downloadRemoteFile(sftp, request.remotePath, localPath);
+  const localStats = await fs.promises.stat(localPath);
+  session.lastSavedMtimeMs = localStats.mtimeMs;
+  session.watcher = fs.watch(directoryPath, { persistent: false }, (_event, fileName) => {
+    if (!fileName || fileName.toString() === localName) {
+      scheduleRemoteEditSave(editId);
+    }
+  });
+  remoteEditSessions.set(editId, session);
+
+  const openError = await shell.openPath(localPath);
+  if (openError) {
+    closeRemoteEditSession(editId, `打开编辑器失败：${openError}`);
+    throw new Error(openError);
+  }
+
+  emitRemoteEditStatus(session, "opened", `已打开 ${remoteName}`);
+  return {
+    editId,
+    sessionId: request.sessionId,
+    remotePath: request.remotePath,
+    localPath,
+    name: remoteName,
+    openedAt
+  };
+};
+
 ipcMain.handle(
   "ssh:connect",
   async (event, request: ConnectRequest): Promise<ConnectResponse> => {
@@ -2199,9 +2746,7 @@ ipcMain.handle(
     const runtime: SshRuntime = { id, client, window: win, tunnels: new Map() };
     sessions.set(id, runtime);
 
-    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-      finish(prompts.map(() => request.profile.password ?? ""));
-    });
+    configureKeyboardAuth(client, request.profile);
 
     client.on("tcp connection", (details, accept, reject) => {
       handleRemoteForwardConnection(runtime, details, accept, reject);
@@ -2246,6 +2791,8 @@ ipcMain.handle(
           stream.on("close", () => {
             void closeAllTunnels(runtime);
             stopTerminalLog(id);
+            closeRemoteEditSessionsForSession(id, "连接已关闭，远端编辑已停止。");
+            closeProxyResources(runtime);
             sendStatus(runtime, "disconnected", "连接已关闭");
             sessions.delete(id);
           });
@@ -2256,6 +2803,8 @@ ipcMain.handle(
     client.on("error", (error) => {
       void closeAllTunnels(runtime);
       stopTerminalLog(id);
+      closeRemoteEditSessionsForSession(id, "SSH 会话出错，远端编辑已停止。");
+      closeProxyResources(runtime);
       sendStatus(runtime, "error", error.message);
       sessions.delete(id);
     });
@@ -2263,12 +2812,29 @@ ipcMain.handle(
     client.on("close", () => {
       void closeAllTunnels(runtime);
       stopTerminalLog(id);
+      closeRemoteEditSessionsForSession(id, "SSH 会话已断开，远端编辑已停止。");
+      closeProxyResources(runtime);
       sendStatus(runtime, "disconnected", "SSH 会话已断开");
       sessions.delete(id);
     });
 
     sendStatus(runtime, "connecting", "正在连接");
-    client.connect(config);
+    try {
+      const proxyResources = await createProxySocket(request, win);
+      if (proxyResources.socket) {
+        config.sock = proxyResources.socket;
+        runtime.proxySocket = proxyResources.socket;
+      }
+      if (proxyResources.proxyClient) {
+        runtime.proxyClient = proxyResources.proxyClient;
+      }
+      client.connect(config);
+    } catch (error) {
+      runtime.proxySocket?.destroy();
+      runtime.proxyClient?.end();
+      sessions.delete(id);
+      throw error;
+    }
 
     return { sessionId: id };
   }
@@ -2282,6 +2848,8 @@ ipcMain.handle("ssh:disconnect", async (_event, sessionId: string) => {
 
   await closeAllTunnels(runtime, { unforwardRemote: true });
   stopTerminalLog(sessionId);
+  closeRemoteEditSessionsForSession(sessionId, "连接已断开，远端编辑已停止。");
+  closeProxyResources(runtime);
   runtime.sftp?.end();
   runtime.stream?.end();
   runtime.client.end();
@@ -2724,6 +3292,21 @@ ipcMain.handle("sftp:rename", async (_event, request: SftpRenameRequest) => {
     request.path,
     joinRemotePath(path.posix.dirname(request.path), request.newName)
   );
+});
+
+ipcMain.handle(
+  "sftp:edit-open",
+  async (event, request: SftpEditOpenRequest): Promise<SftpEditOpenResponse> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) {
+      throw new Error("无法找到当前窗口。");
+    }
+    return openRemoteEditSession(win, request);
+  }
+);
+
+ipcMain.handle("sftp:edit-close", async (_event, request: SftpEditCloseRequest) => {
+  closeRemoteEditSession(request.editId);
 });
 
 app.whenReady().then(() => {

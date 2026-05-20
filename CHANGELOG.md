@@ -6,6 +6,16 @@ The format loosely follows Keep a Changelog, and this project uses semantic vers
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-20
+
+### Added
+
+- ProxyJump-style SSH connections through a saved profile.
+- SOCKS5 and HTTP CONNECT proxy modes for SSH connections.
+- Configurable SSH keepalive interval and automatic reconnect attempts.
+- Drag-and-drop SFTP upload/download workflows.
+- Remote file editing through a temporary local file with automatic save-back.
+
 ## [0.2.0] - 2026-05-19
 
 ### Added

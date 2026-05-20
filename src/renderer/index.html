@@ -299,6 +299,45 @@
           </div>
         </fieldset>
 
+        <fieldset class="auth-fieldset connection-fieldset">
+          <legend>连接</legend>
+          <div class="form-grid connection-options-grid">
+            <label>
+              <span>跳板 / 代理</span>
+              <select id="profile-proxy-type">
+                <option value="none">直接连接</option>
+                <option value="jump">跳板配置</option>
+                <option value="socks5">SOCKS5 代理</option>
+                <option value="http">HTTP CONNECT</option>
+              </select>
+            </label>
+            <label id="profile-jump-profile-row">
+              <span>跳板配置</span>
+              <select id="profile-jump-profile"></select>
+            </label>
+            <label id="profile-proxy-host-row">
+              <span>代理主机</span>
+              <input id="profile-proxy-host" autocomplete="off" />
+            </label>
+            <label id="profile-proxy-port-row">
+              <span>代理端口</span>
+              <input id="profile-proxy-port" type="number" min="1" max="65535" value="1080" />
+            </label>
+            <label>
+              <span>Keepalive 秒</span>
+              <input id="profile-keepalive-interval" type="number" min="0" max="300" value="15" />
+            </label>
+            <label>
+              <span>重连次数</span>
+              <input id="profile-reconnect-limit" type="number" min="1" max="20" value="3" />
+            </label>
+            <label class="inline-check wide">
+              <input id="profile-auto-reconnect" type="checkbox" />
+              <span>断线后自动重连</span>
+            </label>
+          </div>
+        </fieldset>
+
         <footer class="modal-actions">
           <label class="inline-check">
             <input id="profile-save" type="checkbox" checked />
@@ -618,6 +657,9 @@
                 <button id="remote-rename" class="icon-button" type="button" title="重命名远端项目">
                   <i data-lucide="square-pen"></i>
                 </button>
+                <button id="remote-edit" class="icon-button" type="button" title="编辑远端文件">
+                  <i data-lucide="file-pen-line"></i>
+                </button>
                 <button id="remote-delete" class="icon-button danger" type="button" title="删除远端项目">
                   <i data-lucide="trash-2"></i>
                 </button>
@@ -671,6 +713,18 @@
             <div class="queue-empty">
               <i data-lucide="list-checks"></i>
               <span>暂无传输任务</span>
+            </div>
+          </div>
+          <header class="sftp-edit-head">
+            <div>
+              <strong>远端编辑</strong>
+              <span id="sftp-edit-summary">0 项</span>
+            </div>
+          </header>
+          <div id="sftp-edit-list" class="remote-edit-list">
+            <div class="queue-empty">
+              <i data-lucide="file-pen-line"></i>
+              <span>暂无编辑会话</span>
             </div>
           </div>
         </section>

@@ -966,6 +966,15 @@ textarea:focus {
   border-radius: 6px;
 }
 
+.connection-fieldset {
+  margin-top: 0;
+}
+
+.connection-options-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  padding: 0;
+}
+
 .segmented-control {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
@@ -1668,7 +1677,7 @@ textarea:focus {
 
 .file-list-head {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 92px 96px 34px;
+  grid-template-columns: minmax(120px, 1fr) 92px 96px 64px;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -1685,9 +1694,15 @@ textarea:focus {
   background: var(--control-bg);
 }
 
+.file-list.drop-target {
+  outline: 2px solid var(--klein-bright);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
 .file-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 92px 96px 34px;
+  grid-template-columns: minmax(120px, 1fr) 92px 96px 64px;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -1740,6 +1755,7 @@ textarea:focus {
 
 .file-actions {
   display: flex;
+  gap: 3px;
   justify-content: flex-end;
   opacity: 0;
 }
@@ -1837,7 +1853,7 @@ textarea:focus {
 
 .sftp-queue-panel {
   display: grid;
-  grid-template-rows: 34px minmax(0, 1fr);
+  grid-template-rows: 34px minmax(0, 1.2fr) 34px minmax(0, 0.9fr);
   min-height: 0;
   border-top: 1px solid var(--line);
   background: var(--panel);
@@ -1872,7 +1888,17 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.sftp-edit-head {
+  border-top: 1px solid var(--line);
+}
+
 .sftp-transfer-queue {
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+
+.remote-edit-list {
   min-height: 0;
   overflow: auto;
   padding: 6px 8px;
@@ -2028,6 +2054,44 @@ textarea:focus {
 
 .queue-row.canceled .queue-progress-fill {
   background: var(--muted);
+}
+
+.remote-edit-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--control-bg), var(--control-soft-bg));
+}
+
+.remote-edit-row + .remote-edit-row {
+  margin-top: 5px;
+}
+
+.remote-edit-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.remote-edit-main strong,
+.remote-edit-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-edit-main strong {
+  font-size: 12px;
+}
+
+.remote-edit-main span {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .sftp-footer {

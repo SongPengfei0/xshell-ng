@@ -9,8 +9,6 @@ This roadmap tracks likely work after the initial public repository setup.
 
 ## Later
 
-- Drag-and-drop upload/download in SFTP.
-- Remote file edit and save-back workflow.
 - Remote chmod / permission editing.
 - Login scripts and trigger rules.
 - Split the large renderer state machine into focused modules.

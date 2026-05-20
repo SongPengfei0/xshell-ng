@@ -18,6 +18,10 @@ import type {
   SendDataRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
+  SftpEditCloseRequest,
+  SftpEditOpenRequest,
+  SftpEditOpenResponse,
+  SftpEditStatusEvent,
   SftpCancelTransferRequest,
   SftpListRequest,
   SftpMkdirRequest,
@@ -62,6 +66,7 @@ declare global {
       profilesImport: () => Promise<ProfileImportResponse>;
       selectPrivateKey: () => Promise<string | undefined>;
       localHome: () => Promise<string>;
+      dragFilePath: (file: File) => string;
       localList: (request: LocalListRequest) => Promise<FileListResponse>;
       localMkdir: (request: LocalMkdirRequest) => Promise<void>;
       localRename: (request: LocalRenameRequest) => Promise<void>;
@@ -73,6 +78,8 @@ declare global {
       sftpDelete: (request: SftpDeleteRequest) => Promise<void>;
       sftpRename: (request: SftpRenameRequest) => Promise<void>;
       sftpCancelTransfer: (request: SftpCancelTransferRequest) => Promise<boolean>;
+      sftpEditOpen: (request: SftpEditOpenRequest) => Promise<SftpEditOpenResponse>;
+      sftpEditClose: (request: SftpEditCloseRequest) => Promise<void>;
       tunnelList: (request: TunnelListRequest) => Promise<TunnelInfo[]>;
       tunnelCreate: (request: TunnelCreateRequest) => Promise<TunnelCreateResponse>;
       tunnelClose: (request: TunnelCloseRequest) => Promise<void>;
@@ -82,6 +89,7 @@ declare global {
       windowToggleMaximize: () => Promise<boolean>;
       windowClose: () => Promise<void>;
       onTransferProgress: (callback: (payload: TransferProgressEvent) => void) => () => void;
+      onSftpEditStatus: (callback: (payload: SftpEditStatusEvent) => void) => () => void;
       onData: (callback: (payload: SshDataEvent) => void) => () => void;
       onStatus: (callback: (payload: SshStatusEvent) => void) => () => void;
       onTunnelsChanged: (callback: (payload: TunnelListEvent) => void) => () => void;

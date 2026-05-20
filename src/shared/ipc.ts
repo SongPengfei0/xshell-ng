@@ -20,10 +20,15 @@ export interface SshProfile {
   passphrase?: string;
   color?: string;
   tunnels?: SavedTunnelConfig[];
+  proxy?: SshProxyConfig;
+  keepaliveInterval?: number;
+  autoReconnect?: boolean;
+  reconnectLimit?: number;
 }
 
 export interface ConnectRequest {
   profile: SshProfile;
+  proxyProfile?: SshProfile;
   terminal: {
     cols: number;
     rows: number;
@@ -43,6 +48,15 @@ export interface SshStatusEvent {
   sessionId: string;
   status: ConnectionStatus;
   message: string;
+}
+
+export type SshProxyType = "jump" | "socks5" | "http";
+
+export interface SshProxyConfig {
+  type: SshProxyType;
+  jumpProfileId?: string;
+  host?: string;
+  port?: number;
 }
 
 export type TunnelType = "local" | "remote" | "dynamic";
@@ -270,6 +284,44 @@ export interface SftpRenameRequest {
 
 export interface SftpCancelTransferRequest {
   transferId: string;
+}
+
+export interface SftpEditOpenRequest {
+  sessionId: string;
+  remotePath: string;
+  name?: string;
+}
+
+export interface SftpEditOpenResponse {
+  editId: string;
+  sessionId: string;
+  remotePath: string;
+  localPath: string;
+  name: string;
+  openedAt: string;
+}
+
+export interface SftpEditCloseRequest {
+  editId: string;
+}
+
+export type SftpEditStatus =
+  | "opening"
+  | "opened"
+  | "saving"
+  | "saved"
+  | "error"
+  | "closed";
+
+export interface SftpEditStatusEvent {
+  editId: string;
+  sessionId: string;
+  remotePath: string;
+  localPath: string;
+  name: string;
+  status: SftpEditStatus;
+  message: string;
+  savedAt?: string;
 }
 
 export interface TransferSummary {

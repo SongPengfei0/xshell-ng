@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   ConnectRequest,
   ConnectResponse,
@@ -18,6 +18,10 @@ import type {
   SendDataRequest,
   SftpDeleteRequest,
   SftpDownloadRequest,
+  SftpEditCloseRequest,
+  SftpEditOpenRequest,
+  SftpEditOpenResponse,
+  SftpEditStatusEvent,
   SftpCancelTransferRequest,
   SftpListRequest,
   SftpMkdirRequest,
@@ -85,6 +89,7 @@ contextBridge.exposeInMainWorld("xshellBridge", {
   selectPrivateKey: (): Promise<string | undefined> =>
     ipcRenderer.invoke("key:select"),
   localHome: (): Promise<string> => ipcRenderer.invoke("local:home"),
+  dragFilePath: (file: File): string => webUtils.getPathForFile(file),
   localList: (request: LocalListRequest) =>
     ipcRenderer.invoke("local:list", request),
   localMkdir: (request: LocalMkdirRequest): Promise<void> =>
@@ -107,6 +112,10 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("sftp:rename", request),
   sftpCancelTransfer: (request: SftpCancelTransferRequest): Promise<boolean> =>
     ipcRenderer.invoke("sftp:cancel-transfer", request),
+  sftpEditOpen: (request: SftpEditOpenRequest): Promise<SftpEditOpenResponse> =>
+    ipcRenderer.invoke("sftp:edit-open", request),
+  sftpEditClose: (request: SftpEditCloseRequest): Promise<void> =>
+    ipcRenderer.invoke("sftp:edit-close", request),
   tunnelList: (request: TunnelListRequest): Promise<TunnelInfo[]> =>
     ipcRenderer.invoke("tunnel:list", request),
   tunnelCreate: (request: TunnelCreateRequest): Promise<TunnelCreateResponse> =>
@@ -125,6 +134,8 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("window:close"),
   onTransferProgress: (callback: (payload: TransferProgressEvent) => void) =>
     on<TransferProgressEvent>("sftp:transfer-progress", callback),
+  onSftpEditStatus: (callback: (payload: SftpEditStatusEvent) => void) =>
+    on<SftpEditStatusEvent>("sftp:edit-status", callback),
   onData: (callback: (payload: SshDataEvent) => void) =>
     on<SshDataEvent>("ssh:data", callback),
   onStatus: (callback: (payload: SshStatusEvent) => void) =>
