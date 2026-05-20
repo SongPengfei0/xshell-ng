@@ -17,6 +17,7 @@ import type {
   SftpEditOpenResponse,
   SftpEditStatus,
   SftpEditStatusEvent,
+  SftpPreviewResponse,
   SshProfile,
   SshProxyType,
   TerminalLogEntry,
@@ -313,6 +314,11 @@ const elements = {
   sftpInputTitle: $("#sftp-input-title"),
   sftpInputLabel: $("#sftp-input-label"),
   sftpInputValue: $("#sftp-input-value") as HTMLInputElement,
+  sftpPreviewOverlay: $("#sftp-preview-overlay"),
+  sftpPreviewTitle: $("#sftp-preview-title"),
+  sftpPreviewMeta: $("#sftp-preview-meta"),
+  sftpPreviewBody: $("#sftp-preview-body"),
+  sftpPreviewEdit: $("#sftp-preview-edit") as HTMLButtonElement,
   toast: $("#toast")
 };
 
@@ -339,6 +345,7 @@ let isTerminalSearchOpen = false;
 let activeSftpTransferId: string | undefined;
 let sftpTransferQueue: SftpTransferQueueItem[] = [];
 let remoteEditSessions: RemoteEditItem[] = [];
+let activeSftpPreviewEntry: FileListEntry | undefined;
 let tunnelState: { sessionId?: string; profileId?: string; tunnels: TunnelInfo[] } = {
   tunnels: []
 };
@@ -856,6 +863,14 @@ function applyTheme(theme: ThemeId) {
   Object.entries(config.ui).forEach(([name, value]) => {
     document.documentElement.style.setProperty(name, value);
   });
+  document.documentElement.style.setProperty(
+    "--terminal-bg",
+    config.terminal.background ?? config.ui["--terminal-frame"]
+  );
+  document.documentElement.style.setProperty(
+    "--terminal-fg",
+    config.terminal.foreground ?? config.ui["--text"]
+  );
 }
 
 function loadPreferences(): Preferences {
@@ -1389,7 +1404,10 @@ function renderFilePane(side: "local" | "remote") {
           <span class="file-actions">
             ${
               side === "remote" && entry.kind === "file"
-                ? `<button class="file-inline-action" type="button" data-action="edit" title="编辑远端文件">
+                ? `<button class="file-inline-action" type="button" data-action="preview" title="预览远端文件">
+                    <i data-lucide="eye"></i>
+                  </button>
+                  <button class="file-inline-action" type="button" data-action="edit" title="编辑远端文件">
                     <i data-lucide="file-pen-line"></i>
                   </button>`
                 : ""
@@ -3930,6 +3948,7 @@ async function loadRemoteDirectory(remotePath?: string) {
     throw new Error("SFTP 通道未建立。");
   }
 
+  closeSftpPreview();
   const response = await window.xshellBridge.sftpList({
     sessionId: sftpState.sessionId,
     path: remotePath || sftpState.remote.path || "."
@@ -4254,6 +4273,95 @@ function handleSftpEditStatus(event: SftpEditStatusEvent) {
   }
   if (event.status === "error") {
     showToast(event.message);
+  }
+}
+
+function sftpPreviewKindLabel(kind: SftpPreviewResponse["kind"]) {
+  return {
+    text: "文本",
+    json: "JSON",
+    log: "日志",
+    image: "图片"
+  }[kind];
+}
+
+function closeSftpPreview() {
+  elements.sftpPreviewOverlay.classList.add("hidden");
+  activeSftpPreviewEntry = undefined;
+}
+
+function renderSftpPreviewLoading(entry: FileListEntry) {
+  elements.sftpPreviewTitle.textContent = entry.name;
+  elements.sftpPreviewMeta.textContent = `${entry.path} · 正在读取`;
+  elements.sftpPreviewEdit.disabled = entry.kind !== "file";
+  elements.sftpPreviewBody.innerHTML = `
+    <div class="sftp-preview-empty">
+      <i data-lucide="loader"></i>
+      <span>正在读取远端文件...</span>
+    </div>
+  `;
+  elements.sftpPreviewOverlay.classList.remove("hidden");
+  refreshIcons();
+}
+
+function renderSftpPreview(response: SftpPreviewResponse) {
+  const meta = [
+    sftpPreviewKindLabel(response.kind),
+    formatBytes(response.size),
+    response.truncated ? "已截断" : ""
+  ].filter(Boolean);
+  elements.sftpPreviewTitle.textContent = response.name;
+  elements.sftpPreviewMeta.textContent = `${response.remotePath} · ${meta.join(" · ")}`;
+  elements.sftpPreviewEdit.disabled = false;
+
+  if (response.kind === "image") {
+    elements.sftpPreviewBody.innerHTML = `
+      <div class="sftp-preview-image">
+        <img src="${escapeHtml(response.dataUrl ?? "")}" alt="${escapeHtml(response.name)}" />
+      </div>
+    `;
+  } else {
+    elements.sftpPreviewBody.innerHTML = `
+      <pre class="sftp-preview-text ${response.kind}">${escapeHtml(response.text ?? "")}</pre>
+    `;
+  }
+
+  refreshIcons();
+}
+
+async function previewRemoteFile(entry?: FileListEntry) {
+  const selected = entry ?? getSelectedFile("remote");
+  if (!sftpState.sessionId || !selected) {
+    showToast("请选择一个远端文件");
+    return;
+  }
+  if (selected.kind !== "file") {
+    showToast("只能预览远端文件");
+    return;
+  }
+
+  activeSftpPreviewEntry = selected;
+  renderSftpPreviewLoading(selected);
+
+  try {
+    const response = await window.xshellBridge.sftpPreview({
+      sessionId: sftpState.sessionId,
+      remotePath: selected.path,
+      name: selected.name
+    });
+    renderSftpPreview(response);
+    setSftpStatus(`已预览远端文件：${selected.name}`);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    elements.sftpPreviewBody.innerHTML = `
+      <div class="sftp-preview-empty error">
+        <i data-lucide="circle-alert"></i>
+        <span>${escapeHtml(message)}</span>
+      </div>
+    `;
+    refreshIcons();
+    setSftpStatus(message);
+    showToast(message);
   }
 }
 
@@ -4833,8 +4941,17 @@ function wireEvents() {
   $("#local-delete").addEventListener("click", () => void deleteLocalSelected());
   $("#remote-mkdir").addEventListener("click", () => void createRemoteDirectory());
   $("#remote-rename").addEventListener("click", () => void renameRemoteSelected());
+  $("#remote-preview").addEventListener("click", () => void previewRemoteFile());
   $("#remote-edit").addEventListener("click", () => void editRemoteFile());
   $("#remote-delete").addEventListener("click", () => void deleteRemoteSelected());
+  $("#sftp-preview-close").addEventListener("click", closeSftpPreview);
+  $("#sftp-preview-close-footer").addEventListener("click", closeSftpPreview);
+  elements.sftpPreviewEdit.addEventListener("click", () => {
+    const entry = activeSftpPreviewEntry ?? getSelectedFile("remote");
+    closeSftpPreview();
+    void editRemoteFile(entry);
+  });
+  elements.sftpDialog.addEventListener("close", closeSftpPreview);
   $("#sftp-upload").addEventListener("click", () => void uploadSelectedEntry());
   $("#sftp-download").addEventListener("click", () => void downloadSelectedEntry());
   $("#sftp-clear-completed").addEventListener("click", clearCompletedTransfers);
@@ -5101,8 +5218,18 @@ function wireEvents() {
       return;
     }
 
+    if (action === "preview") {
+      void previewRemoteFile(entry);
+      return;
+    }
+
     if (action === "edit") {
       void editRemoteFile(entry);
+      return;
+    }
+
+    if (event.detail >= 2 && entry?.kind === "file") {
+      void previewRemoteFile(entry);
       return;
     }
 

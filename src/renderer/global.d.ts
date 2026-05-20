@@ -25,6 +25,8 @@ import type {
   SftpCancelTransferRequest,
   SftpListRequest,
   SftpMkdirRequest,
+  SftpPreviewRequest,
+  SftpPreviewResponse,
   SftpRenameRequest,
   SftpUploadRequest,
   TunnelCloseRequest,
@@ -93,6 +95,7 @@ declare global {
       sftpRename: (request: SftpRenameRequest) => Promise<void>;
       sftpCancelTransfer: (request: SftpCancelTransferRequest) => Promise<boolean>;
       sftpEditOpen: (request: SftpEditOpenRequest) => Promise<SftpEditOpenResponse>;
+      sftpPreview: (request: SftpPreviewRequest) => Promise<SftpPreviewResponse>;
       sftpEditClose: (request: SftpEditCloseRequest) => Promise<void>;
       tunnelList: (request: TunnelListRequest) => Promise<TunnelInfo[]>;
       tunnelCreate: (request: TunnelCreateRequest) => Promise<TunnelCreateResponse>;

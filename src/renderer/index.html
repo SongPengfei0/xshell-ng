@@ -723,6 +723,9 @@
                 <button id="remote-rename" class="icon-button" type="button" title="重命名远端项目">
                   <i data-lucide="square-pen"></i>
                 </button>
+                <button id="remote-preview" class="icon-button" type="button" title="预览远端文件">
+                  <i data-lucide="eye"></i>
+                </button>
                 <button id="remote-edit" class="icon-button" type="button" title="编辑远端文件">
                   <i data-lucide="file-pen-line"></i>
                 </button>
@@ -763,6 +766,30 @@
               <button class="action-button primary" type="submit">确定</button>
             </footer>
           </form>
+        </div>
+
+        <div id="sftp-preview-overlay" class="sftp-preview-overlay hidden">
+          <section class="sftp-preview-card">
+            <header>
+              <div>
+                <strong id="sftp-preview-title">远端预览</strong>
+                <span id="sftp-preview-meta">选择远端文件</span>
+              </div>
+              <button id="sftp-preview-close" class="icon-button" type="button" title="关闭预览">
+                <i data-lucide="x"></i>
+              </button>
+            </header>
+            <div id="sftp-preview-body" class="sftp-preview-body">
+              <div class="sftp-preview-empty">
+                <i data-lucide="eye"></i>
+                <span>选择远端文件后预览</span>
+              </div>
+            </div>
+            <footer>
+              <button id="sftp-preview-edit" class="action-button" type="button">用编辑器打开</button>
+              <button id="sftp-preview-close-footer" class="action-button primary" type="button">关闭</button>
+            </footer>
+          </section>
         </div>
 
         <section class="sftp-queue-panel" aria-label="传输队列">

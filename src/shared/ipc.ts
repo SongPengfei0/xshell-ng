@@ -331,6 +331,25 @@ export interface SftpEditCloseRequest {
   editId: string;
 }
 
+export type SftpPreviewKind = "text" | "json" | "log" | "image";
+
+export interface SftpPreviewRequest {
+  sessionId: string;
+  remotePath: string;
+  name?: string;
+}
+
+export interface SftpPreviewResponse {
+  kind: SftpPreviewKind;
+  name: string;
+  remotePath: string;
+  size: number;
+  truncated: boolean;
+  mimeType?: string;
+  text?: string;
+  dataUrl?: string;
+}
+
 export type SftpEditStatus =
   | "opening"
   | "opened"

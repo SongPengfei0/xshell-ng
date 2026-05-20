@@ -25,6 +25,8 @@ import type {
   SftpCancelTransferRequest,
   SftpListRequest,
   SftpMkdirRequest,
+  SftpPreviewRequest,
+  SftpPreviewResponse,
   SftpRenameRequest,
   SftpUploadRequest,
   TunnelCloseRequest,
@@ -134,6 +136,8 @@ contextBridge.exposeInMainWorld("xshellBridge", {
     ipcRenderer.invoke("sftp:cancel-transfer", request),
   sftpEditOpen: (request: SftpEditOpenRequest): Promise<SftpEditOpenResponse> =>
     ipcRenderer.invoke("sftp:edit-open", request),
+  sftpPreview: (request: SftpPreviewRequest): Promise<SftpPreviewResponse> =>
+    ipcRenderer.invoke("sftp:preview", request),
   sftpEditClose: (request: SftpEditCloseRequest): Promise<void> =>
     ipcRenderer.invoke("sftp:edit-close", request),
   tunnelList: (request: TunnelListRequest): Promise<TunnelInfo[]> =>

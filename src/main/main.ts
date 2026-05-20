@@ -55,6 +55,9 @@ import type {
   SftpConflictPolicy,
   SftpListRequest,
   SftpMkdirRequest,
+  SftpPreviewKind,
+  SftpPreviewRequest,
+  SftpPreviewResponse,
   SftpRenameRequest,
   SftpUploadRequest,
   SavedTunnelConfig,
@@ -118,6 +121,8 @@ const remoteEditSessions = new Map<string, RemoteEditSession>();
 const isDevelopment = !app.isPackaged;
 const secretStoreFileName = "secure-secrets.json";
 const knownHostsFileName = "known-hosts.json";
+const sftpTextPreviewLimit = 512 * 1024;
+const sftpImagePreviewLimit = 8 * 1024 * 1024;
 
 interface KnownHostRecord {
   host: string;
@@ -1805,6 +1810,75 @@ const remoteKind = (entry: FileEntryWithStats): FileEntryKind => {
   return "other";
 };
 
+const imagePreviewMimeTypes: Record<string, string> = {
+  ".apng": "image/apng",
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp"
+};
+
+const textPreviewExtensions = new Set([
+  ".cfg",
+  ".conf",
+  ".config",
+  ".css",
+  ".csv",
+  ".env",
+  ".htm",
+  ".html",
+  ".ini",
+  ".js",
+  ".jsx",
+  ".md",
+  ".properties",
+  ".py",
+  ".sh",
+  ".sql",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
+
+const previewKindForName = (name: string): SftpPreviewKind | undefined => {
+  const extension = path.posix.extname(name).toLowerCase();
+  if (extension === ".json") {
+    return "json";
+  }
+  if (extension === ".log") {
+    return "log";
+  }
+  if (imagePreviewMimeTypes[extension]) {
+    return "image";
+  }
+  if (textPreviewExtensions.has(extension)) {
+    return "text";
+  }
+  return undefined;
+};
+
+const looksLikeText = (buffer: Buffer) => {
+  if (buffer.length === 0) {
+    return true;
+  }
+  let suspicious = 0;
+  for (const byte of buffer) {
+    if (byte === 0) {
+      return false;
+    }
+    if (byte < 7 || (byte > 14 && byte < 32)) {
+      suspicious += 1;
+    }
+  }
+  return suspicious / buffer.length < 0.02;
+};
+
 const localParentPath = (directoryPath: string) => {
   const parentPath = path.dirname(directoryPath);
   return parentPath === directoryPath ? undefined : parentPath;
@@ -2650,6 +2724,121 @@ const downloadRemoteFile = async (
   await pipeline(sftp.createReadStream(remotePath), fs.createWriteStream(localPath));
 };
 
+const readRemotePreviewBuffer = (
+  sftp: SFTPWrapper,
+  remotePath: string,
+  maxBytes: number
+) =>
+  new Promise<Buffer>((resolve, reject) => {
+    if (maxBytes <= 0) {
+      resolve(Buffer.alloc(0));
+      return;
+    }
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const readable = sftp.createReadStream(remotePath, {
+      start: 0,
+      end: Math.max(0, maxBytes - 1)
+    });
+
+    const finish = (error?: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      readable.removeListener("data", handleData);
+      readable.removeListener("error", handleError);
+      readable.removeListener("end", handleEnd);
+      readable.removeListener("close", handleClose);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    };
+
+    const handleData = (chunk: Buffer) => {
+      const remaining = maxBytes - total;
+      if (remaining <= 0) {
+        readable.destroy();
+        return;
+      }
+
+      const nextChunk = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+      chunks.push(Buffer.from(nextChunk));
+      total += nextChunk.length;
+      if (total >= maxBytes) {
+        readable.destroy();
+      }
+    };
+    const handleError = (error: Error) => finish(error);
+    const handleEnd = () => finish();
+    const handleClose = () => finish();
+
+    readable.on("data", handleData);
+    readable.once("error", handleError);
+    readable.once("end", handleEnd);
+    readable.once("close", handleClose);
+  });
+
+const openRemotePreview = async (
+  request: SftpPreviewRequest
+): Promise<SftpPreviewResponse> => {
+  const sftp = await getSftp(request.sessionId);
+  const stats = await sftpLstat(sftp, request.remotePath);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error("只能预览远端普通文件。");
+  }
+
+  const name = request.name || path.posix.basename(request.remotePath);
+  const extension = path.posix.extname(name).toLowerCase();
+  const detectedKind = previewKindForName(name);
+  if (detectedKind === "image") {
+    if (stats.size > sftpImagePreviewLimit) {
+      throw new Error(`图片超过 ${Math.round(sftpImagePreviewLimit / 1024 / 1024)} MB，建议下载后查看。`);
+    }
+    const buffer = await readRemotePreviewBuffer(sftp, request.remotePath, stats.size);
+    const mimeType = imagePreviewMimeTypes[extension] ?? "application/octet-stream";
+    return {
+      kind: "image",
+      name,
+      remotePath: request.remotePath,
+      size: stats.size,
+      truncated: false,
+      mimeType,
+      dataUrl: `data:${mimeType};base64,${buffer.toString("base64")}`
+    };
+  }
+
+  const buffer = await readRemotePreviewBuffer(sftp, request.remotePath, sftpTextPreviewLimit);
+  const inferredKind = detectedKind ?? (looksLikeText(buffer) ? "text" : undefined);
+  if (!inferredKind) {
+    throw new Error("暂不支持预览此文件类型。");
+  }
+
+  const truncated = stats.size > buffer.length;
+  let text = buffer.toString("utf8");
+  if (inferredKind === "json" && !truncated) {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      // Keep raw JSON text when parsing fails.
+    }
+  }
+
+  return {
+    kind: inferredKind,
+    name,
+    remotePath: request.remotePath,
+    size: stats.size,
+    truncated,
+    mimeType: inferredKind === "json" ? "application/json" : "text/plain",
+    text
+  };
+};
+
 const uploadEditedFile = async (session: RemoteEditSession) => {
   if (session.saving) {
     session.pendingSave = true;
@@ -3411,6 +3600,12 @@ ipcMain.handle(
     }
     return openRemoteEditSession(win, request);
   }
+);
+
+ipcMain.handle(
+  "sftp:preview",
+  async (_event, request: SftpPreviewRequest): Promise<SftpPreviewResponse> =>
+    openRemotePreview(request)
 );
 
 ipcMain.handle("sftp:edit-close", async (_event, request: SftpEditCloseRequest) => {

@@ -6,10 +6,13 @@ The format loosely follows Keep a Changelog, and this project uses semantic vers
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-20
+
 ### Added
 
 - Split terminal view for showing multiple open tabs as resizable terminal panes.
 - Configurable terminal log directory with a log viewer for opening or locating log files.
+- Lightweight SFTP remote file previews for text, JSON, log, and image files.
 
 ### Changed
 

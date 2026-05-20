@@ -25,6 +25,8 @@
   --accent-soft: var(--klein-soft);
   --danger: #c2410c;
   --terminal-frame: #071326;
+  --terminal-bg: #071326;
+  --terminal-fg: #dbe8ff;
   --app-glow: rgba(18, 71, 183, 0.09);
   --scrollbar-track: #eef4ff;
   --scrollbar-thumb: #9fb7eb;
@@ -1876,7 +1878,7 @@ textarea:focus {
 
 .file-list-head {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 92px 96px 64px;
+  grid-template-columns: minmax(120px, 1fr) 92px 96px 86px;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -1901,7 +1903,7 @@ textarea:focus {
 
 .file-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 92px 96px 64px;
+  grid-template-columns: minmax(120px, 1fr) 92px 96px 86px;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -2360,6 +2362,147 @@ textarea:focus {
 
 .sftp-input-overlay.hidden {
   display: none;
+}
+
+.sftp-preview-overlay {
+  position: absolute;
+  inset: 48px 0 58px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: var(--modal-scrim);
+  backdrop-filter: blur(2px);
+}
+
+.sftp-preview-overlay.hidden {
+  display: none;
+}
+
+.sftp-preview-card {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr) 52px;
+  width: min(920px, calc(100% - 36px));
+  height: min(620px, calc(100% - 36px));
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--tab-border);
+  border-radius: 8px;
+  background: var(--modal-bg);
+  box-shadow: 0 18px 42px var(--menu-shadow);
+}
+
+.sftp-preview-card header,
+.sftp-preview-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 12px 0 14px;
+}
+
+.sftp-preview-card header {
+  border-bottom: 1px solid var(--line);
+  background: var(--modal-head-bg);
+}
+
+.sftp-preview-card header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sftp-preview-card header strong,
+.sftp-preview-card header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-preview-card header strong {
+  font-size: 14px;
+}
+
+.sftp-preview-card header span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sftp-preview-card footer {
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.sftp-preview-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+}
+
+.sftp-preview-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 220px;
+  color: var(--terminal-fg);
+  font-size: 12px;
+}
+
+.sftp-preview-empty.error {
+  color: var(--danger);
+}
+
+.sftp-preview-empty svg {
+  width: 28px;
+  height: 28px;
+}
+
+.sftp-preview-text {
+  min-height: 100%;
+  margin: 0;
+  padding: 14px;
+  background: var(--terminal-bg);
+  color: var(--terminal-fg);
+  font-family: Consolas, "Cascadia Mono", "Microsoft YaHei UI", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.sftp-preview-image {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 16px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    var(--terminal-bg);
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+}
+
+.sftp-preview-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px var(--menu-shadow);
 }
 
 .sftp-input-card {
