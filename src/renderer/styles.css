@@ -812,6 +812,49 @@ body.sidebar-hidden .sidebar-restore {
   display: block;
 }
 
+.terminal-context-menu {
+  position: fixed;
+  z-index: 20;
+  display: grid;
+  min-width: 118px;
+  padding: 5px;
+  border: 1px solid var(--menu-border);
+  border-radius: 6px;
+  background: var(--menu-bg);
+  box-shadow: 0 14px 34px var(--menu-shadow);
+}
+
+.terminal-context-menu.hidden {
+  display: none;
+}
+
+.terminal-context-menu button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 10px 0 8px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--menu-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.terminal-context-menu button:hover,
+.terminal-context-menu button:focus {
+  background: var(--menu-hover-bg);
+  color: var(--menu-hover-text);
+  outline: none;
+}
+
+.terminal-context-menu svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.9;
+}
+
 .split-resize-handle {
   position: absolute;
   border: 0;

@@ -220,6 +220,7 @@ const elements = {
   terminalSearchWord: $("#terminal-search-word") as HTMLButtonElement,
   terminalSearchRegex: $("#terminal-search-regex") as HTMLButtonElement,
   terminalSearchClose: $("#terminal-search-close") as HTMLButtonElement,
+  terminalContextMenu: $("#terminal-context-menu"),
   splitResizeLayer: $("#split-resize-layer"),
   emptyWorkspace: $("#empty-workspace"),
   statusLeft: $("#status-left"),
@@ -3649,6 +3650,49 @@ function scheduleCloseTopbarMenus() {
   menuCloseTimer = window.setTimeout(closeTopbarMenus, 180);
 }
 
+function closeTerminalContextMenu() {
+  elements.terminalContextMenu.classList.add("hidden");
+}
+
+function openTerminalContextMenu(clientX: number, clientY: number) {
+  const menu = elements.terminalContextMenu;
+  menu.classList.remove("hidden");
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+
+  const bounds = menu.getBoundingClientRect();
+  const margin = 6;
+  const left = Math.max(
+    margin,
+    Math.min(clientX, window.innerWidth - bounds.width - margin)
+  );
+  const top = Math.max(
+    margin,
+    Math.min(clientY, window.innerHeight - bounds.height - margin)
+  );
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+}
+
+function handleTerminalContextMenu(event: MouseEvent) {
+  const target = event.target as HTMLElement;
+  const pane = target.closest<HTMLElement>(".terminal-pane");
+  if (!pane?.dataset.tabId || !elements.terminalStack.contains(pane)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  closeTopbarMenus();
+  if (pane.dataset.tabId !== activeTabId) {
+    activateTab(pane.dataset.tabId);
+  }
+  getActiveTab()?.terminal.focus();
+  openTerminalContextMenu(event.clientX, event.clientY);
+}
+
 function getEditableTarget() {
   const activeElement = document.activeElement;
   if (
@@ -3727,10 +3771,7 @@ async function pasteClipboard() {
       return;
     }
 
-    window.xshellBridge.sendData({
-      sessionId: activeTab.sessionId,
-      data: text
-    });
+    activeTab.terminal.paste(text);
   } catch (error) {
     showToast(`粘贴失败：${getErrorMessage(error)}`);
   }
@@ -5097,6 +5138,7 @@ function wireEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeTopbarMenus();
+      closeTerminalContextMenu();
     }
   });
   elements.newSession.addEventListener("click", () => openConnectionDialog());
@@ -5484,12 +5526,33 @@ function wireEvents() {
 
   elements.terminalStack.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
+    if (target.closest("#terminal-context-menu")) {
+      return;
+    }
+    closeTerminalContextMenu();
     const pane = target.closest<HTMLElement>(".terminal-pane");
     if (pane?.dataset.tabId && pane.dataset.tabId !== activeTabId) {
       activateTab(pane.dataset.tabId);
       return;
     }
     getActiveTab()?.terminal.focus();
+  });
+  elements.terminalStack.addEventListener("contextmenu", handleTerminalContextMenu);
+  elements.terminalContextMenu.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const command = target.closest<HTMLElement>("[data-command]")?.dataset.command;
+    if (!command) {
+      return;
+    }
+
+    closeTerminalContextMenu();
+    handleCommand(command);
+  });
+  window.addEventListener("pointerdown", (event) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest("#terminal-context-menu")) {
+      closeTerminalContextMenu();
+    }
   });
 
   elements.sftpLocalList.addEventListener("click", (event) => {
