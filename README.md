@@ -6,7 +6,7 @@ XShell NG 是一个面向 Windows 的桌面 SSH 客户端原型，使用 Electro
 
 ## 项目状态
 
-当前版本是 `0.5.0` 原型阶段，主要面向 Windows 本地使用和开源协作迭代。公开仓库中不应提交真实连接配置、服务器地址、密码、passphrase、私钥或打包产物。
+当前版本是 `0.6.0` 原型阶段，主要面向 Windows 本地使用和开源协作迭代。公开仓库中不应提交真实连接配置、服务器地址、密码、passphrase、私钥或打包产物。
 
 更多维护文档：
 
@@ -246,7 +246,7 @@ npm run dist:win
 ```
 
 - `npm run pack`：生成 `release/win-unpacked/XShell NG.exe`。
-- `npm run dist:portable`：生成便携版 `release/XShell NG 0.5.0.exe`。
+- `npm run dist:portable`：生成便携版 `release/XShell NG 0.6.0.exe`。
 - `npm run dist:win`：生成安装包和便携版。
 
 ## 项目结构

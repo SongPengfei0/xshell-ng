@@ -6,6 +6,16 @@ The format loosely follows Keep a Changelog, and this project uses semantic vers
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-24
+
+### Added
+
+- Terminal right-click context menu with a paste action.
+
+### Fixed
+
+- Terminal paste now uses xterm.js paste handling so Windows clipboard line endings do not create extra blank lines in Vim.
+
 ## [0.5.0] - 2026-05-20
 
 ### Added
